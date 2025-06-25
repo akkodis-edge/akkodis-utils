@@ -21,7 +21,7 @@ def get_at_result(stream, command, max_response_time, max_retries):
             time.sleep(0.1)
         history += buf
         attempt += 1
-    raise RuntimeError('Timeout waiting for "{}": "{}"'.format(command, history))
+    raise RuntimeError('Timeout waiting for {}: {}'.format(command, history))
 
 def strip_command_from_msg(command, msg):
     begin = msg.find(command)
@@ -51,6 +51,8 @@ def main():
     parser.add_argument('--device', required=True, help='Path to AT device')
     parser.add_argument('--quectel-gps', action='store_true', help='Enable quectel gps')
     parser.add_argument('--no-quectel-gps', action='store_true', help='Disable quectel gps')
+    parser.add_argument('--quectel-nvread', help='Read non volatile data')
+    parser.add_argument('--quectel-nvwrite', nargs=2, help='Read non volatile data')
     args = parser.parse_args()
 
     if not args.device:
@@ -59,7 +61,8 @@ def main():
     if args.quectel_gps and args.no_quectel_gps:
         print('invalid argument: --quectel-gps and --no-quectel-gps are mutually exclusive')
         sys.exit(1)
-    if not args.quectel_gps and not args.no_quectel_gps:
+    if not args.quectel_gps and not args.no_quectel_gps \
+        and not args.quectel_nvread and not args.quectel_nvwrite:
         print('invalid argument: no action provided')
         sys.exit(1)
 
@@ -70,7 +73,7 @@ def main():
         if args.quectel_gps or args.no_quectel_gps:
             # enable/disable only supported from respective state
             msg = get_at_result(stream, b'at+qgps?\r', 0.3, 5)
-            quectel_gps_state = strip_command_from_msg(b'+QGPS:', msg).decode('UTF-8').strip()
+            quectel_gps_state = strip_command_from_msg(b'+QGPS:', msg).decode().strip()
             print("quectel-gps state: {}".format(quectel_gps_state))
             if args.quectel_gps and quectel_gps_state == '0':
                 print('quectel-gps activate')
@@ -78,6 +81,16 @@ def main():
             if args.no_quectel_gps and quectel_gps_state =='1':
                 print('quectel-gps disable')
                 get_at_result(stream, b'at+qgpsend\r', 5, 1)
+
+        if args.quectel_nvread:
+            req = b'at+qnvfr="' + args.quectel_nvread.encode() + b'"\r'
+            msg = get_at_result(stream, req, 5, 1)
+            value = strip_command_from_msg(b'+QNVFR:', msg).decode().strip()
+            print(value)
+
+        if args.quectel_nvwrite:
+            req = b'at+qnvfw="' + args.quectel_nvwrite[0].encode() + b'",' + args.quectel_nvwrite[1].encode() + b'\r'
+            get_at_result(stream, req, 5, 1)
 
     sys.exit(0)
 
