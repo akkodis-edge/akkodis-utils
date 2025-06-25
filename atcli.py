@@ -56,6 +56,7 @@ def main():
     parser.add_argument('--imsi', action='store_true', help='Read SIM IMSI')
     parser.add_argument('--imei', action='store_true', help='Read modem IMEI')
     parser.add_argument('--iccid', action='store_true', help='Read SIM ICCID')
+    parser.add_argument('--quectel-firmware', action='store_true', help='Read quectel firmware version')
     args = parser.parse_args()
 
     if not args.device:
@@ -66,7 +67,8 @@ def main():
         sys.exit(1)
     if not args.quectel_gps and not args.no_quectel_gps \
         and not args.quectel_nvread and not args.quectel_nvwrite \
-        and not args.imsi and not args.imei and not args.iccid:
+        and not args.imsi and not args.imei and not args.iccid \
+        and not args.quectel_firmware:
         print('invalid argument: no action provided')
         sys.exit(1)
 
@@ -111,6 +113,12 @@ def main():
         if args.iccid:
             msg = get_at_result(stream, b'at+qccid\r', 0.3, 5)
             value = strip_command_from_msg(b'+QCCID:', msg).decode().strip()
+            print(value)
+
+        if args.quectel_firmware:
+            req = b'at+qgmr\r'
+            msg = get_at_result(stream, req, 1, 5)
+            value = strip_command_from_msg(req, msg).decode().strip()
             print(value)
 
     sys.exit(0)
