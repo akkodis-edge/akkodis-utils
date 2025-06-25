@@ -53,6 +53,9 @@ def main():
     parser.add_argument('--no-quectel-gps', action='store_true', help='Disable quectel gps')
     parser.add_argument('--quectel-nvread', help='Read non volatile data')
     parser.add_argument('--quectel-nvwrite', nargs=2, help='Read non volatile data')
+    parser.add_argument('--imsi', action='store_true', help='Read SIM IMSI')
+    parser.add_argument('--imei', action='store_true', help='Read modem IMEI')
+    parser.add_argument('--iccid', action='store_true', help='Read SIM ICCID')
     args = parser.parse_args()
 
     if not args.device:
@@ -62,7 +65,8 @@ def main():
         print('invalid argument: --quectel-gps and --no-quectel-gps are mutually exclusive')
         sys.exit(1)
     if not args.quectel_gps and not args.no_quectel_gps \
-        and not args.quectel_nvread and not args.quectel_nvwrite:
+        and not args.quectel_nvread and not args.quectel_nvwrite \
+        and not args.imsi and not args.imei and not args.iccid:
         print('invalid argument: no action provided')
         sys.exit(1)
 
@@ -91,6 +95,23 @@ def main():
         if args.quectel_nvwrite:
             req = b'at+qnvfw="' + args.quectel_nvwrite[0].encode() + b'",' + args.quectel_nvwrite[1].encode() + b'\r'
             get_at_result(stream, req, 5, 1)
+
+        if args.imsi:
+            req = b'at+cimi\r'
+            msg = get_at_result(stream, req, 0.3, 5)
+            value = strip_command_from_msg(req, msg).decode().strip()
+            print(value)
+
+        if args.imei:
+            req = b'at+gsn\r'
+            msg = get_at_result(stream, req, 0.3, 5)
+            value = strip_command_from_msg(req, msg).decode().strip()
+            print(value)
+
+        if args.iccid:
+            msg = get_at_result(stream, b'at+qccid\r', 0.3, 5)
+            value = strip_command_from_msg(b'+QCCID:', msg).decode().strip()
+            print(value)
 
     sys.exit(0)
 
