@@ -5,6 +5,13 @@ import time
 import random
 import sqlite3
 import argparse
+from rich.live import Live
+from rich.table import Table
+from rich.layout import Layout
+
+class LimitedTable(Table):
+    def __init__(self, *args, **kwargs):
+        super(LimitedTable, self).__init__(*args, **kwargs)
 
 def init_db(db, cursor, sensors):
     cursor.execute('''
@@ -95,6 +102,8 @@ def main():
     ]
 
     # Open db
+    # For single writer and multiple readers WAL should be considered:
+    # https://sqlite.org/wal.html
     db = sqlite3.connect(args.db)
     if args.debug:
         db.set_trace_callback(print)
@@ -103,21 +112,37 @@ def main():
     # Initialize db
     init_db(db, cursor, sensors)
 
+    # Prepare screen layout
+    # How to manage screen resize?
+    layout = Layout(name='root')
+    layout.split_row(Layout(name='left'), Layout(name='right'))
+
+    # Prepare table for viewing
+    table = LimitedTable()
+    table.add_column('date')
+    table.add_column('type')
+    table.add_column('name')
+    table.add_column('value')
+
     next_id = 0
-    while True:
-        # Retrieve data
-        for id, type, name, value, epoch in get_values(db, cursor, next_id):
-            date = time.strftime('%Y-%m-%d %H:%M:%S', time.gmtime(epoch))
-            print('[{}] {}.{} = {}'.format(date, type, name, value))
-            if id >= next_id:
-                next_id = id + 1
+    with Live(layout, refresh_per_second=4) as live:
+        while True:
+            # Retrieve data
+            for id, type, name, value, epoch in get_values(db, cursor, next_id):
+                date = time.strftime('%Y-%m-%d %H:%M:%S', time.gmtime(epoch))
+                table.add_row(date, type, name, str(value))
+                if id >= next_id:
+                    next_id = id + 1
+            layout['left'].update(table)
 
-        # Add data
-        for sensor in sensors:
-            add_value(db, cursor, sensor['type'], sensor['name'], sensor['func']())
-        db.commit()
+            # Add data -> This should be a separate process
+            for sensor in sensors:
+                add_value(db, cursor, sensor['type'], sensor['name'], sensor['func']())
+            db.commit()
 
-        time.sleep(1)
+            time.sleep(1)
+
+            live.console.print('loop: {}'.format(next_id))
 
     sys.exit(1)
 
