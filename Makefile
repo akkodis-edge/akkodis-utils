@@ -41,6 +41,9 @@ $(BUILD)/atcli: atcli.py
 	mkdir -p $(BUILD)
 	install -m 0755 $< $@
 
+$(BUILD)/owld: $(BUILD)/owld.o
+	$(CC) -o $@ $^ $(LDFLAGS)
+
 $(BUILD)/%.o: %.c
 ifeq ($(USE_CLANG_TIDY), 1)
 	$(CLANG_TIDY) $< -- $(CFLAGS)
@@ -69,3 +72,8 @@ install: $(ALL_TARGETS_BIN_INSTALL)
 %.bin.install: $(BUILD)/%
 	install -d $(DESTDIR)$(bindir)
 	install -m 0755 $< $(DESTDIR)$(bindir)
+
+.PHONY: test
+test: $(BUILD)/libowl.o $(BUILD)/test-libowl.o
+	$(CXX) -o $(BUILD)/test-libowl $^ $(LDFLAGS) -lCatch2Main -lCatch2 -lsqlite3
+	$(BUILD)/test-libowl
