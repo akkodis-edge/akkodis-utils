@@ -7,8 +7,8 @@ bindir ?= $(exec_prefix)/bin
 sysconfdir ?= $(prefix)/etc
 systemd_system_unitdir ?= $(libdir)/systemd/system
 
-CFLAGS += -Wall -Wextra -Werror -std=gnu17 -pedantic -O3 -D_GNU_SOURCE
-CXXFLAGS += -Wall -Wextra -Werror -std=gnu++20 -pedantic -O3 -I$(BUILD)
+CFLAGS += -Wall -Wextra -Werror -std=gnu17 -pedantic -O3 -D_GNU_SOURCE -D_TIME_BITS=64 -D_FILE_OFFSET_BITS=64 -fPIC
+CXXFLAGS += -Wall -Wextra -Werror -std=gnu++20 -pedantic -O3 -I$(BUILD) -D_TIME_BITS=64 -D_FILE_OFFSET_BITS=64 -fPIC
 
 # Enable sanitizers by default
 USE_SANITIZER ?= 1
@@ -41,8 +41,11 @@ $(BUILD)/atcli: atcli.py
 	mkdir -p $(BUILD)
 	install -m 0755 $< $@
 
-$(BUILD)/owld: $(BUILD)/owld.o
-	$(CC) -o $@ $^ $(LDFLAGS)
+$(BUILD)/libowl.so: $(BUILD)/libowl.o
+	$(CC) -o $@ $^ -shared $(LDFLAGS) -lsqlite3
+
+$(BUILD)/owld: $(BUILD)/owld.o $(BUILD)/libowl.so
+	$(CC) -o $@ $^ $(LDFLAGS) -L $(BUILD) -lcyaml -liio -lowl
 
 $(BUILD)/%.o: %.c
 ifeq ($(USE_CLANG_TIDY), 1)
@@ -74,6 +77,6 @@ install: $(ALL_TARGETS_BIN_INSTALL)
 	install -m 0755 $< $(DESTDIR)$(bindir)
 
 .PHONY: test
-test: $(BUILD)/libowl.o $(BUILD)/test-libowl.o
-	$(CXX) -o $(BUILD)/test-libowl $^ $(LDFLAGS) -lCatch2Main -lCatch2 -lsqlite3
+test: $(BUILD)/test-libowl.o $(BUILD)/libowl.so
+	$(CXX) -o $(BUILD)/test-libowl $^ $(LDFLAGS) -lCatch2Main -lCatch2 -lowl
 	$(BUILD)/test-libowl

@@ -2,6 +2,7 @@
 #include <string.h>
 #include <stdint.h>
 #include <stdio.h>
+#include <limits.h>
 #include <time.h>
 #include <errno.h>
 #include <sqlite3.h>
@@ -43,10 +44,10 @@ static int libowl_duration_elapsed(const struct timespec* time_now, const struct
 		return elapsed.tv_sec > duration->tv_sec;
 }
 
-static int libowl_monotonic(struct timespec* ts, void* priv)
+static int libowl_monotonic(struct timespec* time, void* priv)
 {
 	(void) priv;
-	const int r = clock_gettime(CLOCK_MONOTONIC, ts);
+	const int r = clock_gettime(CLOCK_MONOTONIC, time);
 	if (r != 0)
 		return -errno;
 	return 0;
@@ -67,8 +68,16 @@ const char* libowl_sensor_type_str(int type)
 	switch (type) {
 	case LIBOWL_SENSOR_TEMP:
 		return "TEMP";
+	default:
+		return NULL;
 	}
-	return NULL;
+}
+
+static int libowl_sensor_type_int(const char* str)
+{
+	if (strcmp(str, "TEMP") == 0)
+		return LIBOWL_SENSOR_TEMP;
+	return INT_MAX;
 }
 
 static int libowl_create_table(struct libowl* owl, const char* statement)
@@ -134,9 +143,46 @@ exit:
 	return r;
 }
 
+static int libowl_pragma(struct libowl* owl)
+{
+	sqlite3_stmt *stmt = NULL;
+	int r = sqlite3_prepare_v2(owl->db,
+		" PRAGMA journal_mode = WAL;"
+		" PRAGMA foreign_keys = ON;",
+		-1, &stmt, NULL);
+	if (r != SQLITE_OK) {
+		if (is_debug(owl))
+			printf("libowl: error: sqlite3_prepare_v2(pragma) [%d]: %s\n", r, sqlite3_errstr(r));
+		r = -EBADF;
+		goto exit;
+	}
+
+	while (1) {
+		r = sqlite3_step(stmt);
+		if (r == SQLITE_DONE)
+			break;
+		if (r == SQLITE_ROW)
+			continue;
+		if (is_debug(owl))
+			printf("libowl: error: sqlite3_step(pragma) [%d]: %s\n", r, sqlite3_errstr(r));
+		r = -EBADF;
+		goto exit;
+	}
+
+	r = 0;
+exit:
+	if (stmt != NULL)
+		sqlite3_finalize(stmt);
+	return r;
+}
+
 static int libowl_init_database(struct libowl* owl)
 {
-	int r = libowl_create_table(owl,
+	int r = libowl_pragma(owl);
+	if (r != 0)
+		return r;
+
+	r = libowl_create_table(owl,
 		"CREATE TABLE IF NOT EXISTS category_type("
 			"id INTEGER PRIMARY KEY,"
 			"name TEXT NOT NULL,"
@@ -426,24 +472,35 @@ int libowl_next(struct libowl* owl, int timeout_ms)
 	return 0;
 }
 
+int libowl_sensor_data_free(struct libowl_sensor_data* data)
+{
+	if (data != NULL) {
+		if (data->name != NULL) {
+			free(data->name);
+			data->name = NULL;
+		}
+	}
+	return 0;
+}
+
 int libowl_read(struct libowl* owl, int64_t index, struct libowl_sensor_data* data, size_t* size)
 {
-	if (owl == NULL || data == NULL || *size = 0 || *size > INT64_MAX)
+	if (owl == NULL || data == NULL || *size == 0 || *size > INT64_MAX)
 		return -EINVAL;
 
 	sqlite3_stmt *stmt = NULL;
 	int r = sqlite3_prepare_v2(owl->db,
-		"SELECT"
+		"SELECT "
 			"A.id,"
 			"(SELECT name from category_type WHERE id = S.type_id),"
 			"S.name,"
 			"A.value,"
 			"A.epoch"
-		"FROM data as A"
-		"INNER JOIN sensors AS S on S.id = A.sensor_id"
-		"WHERE A.id >= (?)"
-		"ORDER BY A.id ASC"
-		"LIMIT (?)"
+		" FROM data as A"
+		" INNER JOIN sensors AS S on S.id = A.sensor_id"
+		" WHERE A.id >= (?)"
+		" ORDER BY A.id ASC"
+		" LIMIT (?)",
 		-1, &stmt, NULL);
 	if (r != SQLITE_OK) {
 		if (is_debug(owl))
@@ -459,7 +516,7 @@ int libowl_read(struct libowl* owl, int64_t index, struct libowl_sensor_data* da
 		r = -EBADF;
 		goto exit;
 	}
-	r = sqlite3_bind_int64(stmt, 2, static_cast<int64_t>(*size));
+	r = sqlite3_bind_int64(stmt, 2, (int64_t) *size);
 	if (r != SQLITE_OK) {
 		if (is_debug(owl))
 			printf("libowl: error: sqlite3_bind_int64(read) [%d]: %s\n", r, sqlite3_errstr(r));
@@ -468,27 +525,32 @@ int libowl_read(struct libowl* owl, int64_t index, struct libowl_sensor_data* da
 	}
 
 	size_t pos = 0;
-	r = SQLITE_ERROR;
 	do {
 		r = sqlite3_step(stmt);
 		switch (r) {
 		case SQLITE_DONE:
 			break;
 		case SQLITE_ROW:
-			data[pos].stmt.column_int64()
-			page.data.push_back(unit_from_statement(s, 0));
+			data[pos].index = sqlite3_column_int64(stmt, 0);
+			data[pos].type = libowl_sensor_type_int((const char*) sqlite3_column_text(stmt, 1));
+			data[pos].name = strdup((const char*) sqlite3_column_text(stmt, 2));
+			data[pos].value = sqlite3_column_int64(stmt, 3);
+			data[pos].epoch = (time_t) sqlite3_column_int64(stmt, 4);
+			pos++;
 			break;
 		default:
 			if (is_debug(owl))
 				printf("libowl: error: sqlite3_step(read) [%d]: %s\n", r, sqlite3_errstr(r));
+			r = -EBADF;
+			goto exit;
 		}
 	} while (r != SQLITE_DONE);
 
+	*size = pos;
+	r = 0;
 
-# Read data since id
-res = cursor.execute('''
-
-''', (id,))
-return res.fetchall()
-
+exit:
+	if (stmt != NULL)
+		sqlite3_finalize(stmt);
+	return r;
 }

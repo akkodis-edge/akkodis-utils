@@ -1,6 +1,8 @@
 #ifndef LIBOWL__H__
 #define LIBOWL__H__
 
+#include <inttypes.h>
+
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -55,12 +57,14 @@ int libowl_next(struct libowl* owl, int timeout_ms);
  *
  */
 struct libowl_sensor_data {
-	char *name; /* Points to libowl internal data, do not free */
+	char *name;
 	int64_t index;
+	time_t epoch;
 	int type;
 	int value;
 };
 int libowl_read(struct libowl* owl, int64_t index, struct libowl_sensor_data* data, size_t* size);
+int libowl_sensor_data_free(struct libowl_sensor_data* data);
 
 #ifdef __cplusplus
 }
