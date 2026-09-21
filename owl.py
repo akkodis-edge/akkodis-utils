@@ -5,89 +5,80 @@ import time
 import random
 import sqlite3
 import argparse
-from rich.live import Live
-from rich.table import Table
-from rich.layout import Layout
+import os
+from ctypes import *
+from time import strftime
+from datetime import datetime, timezone
 
-class LimitedTable(Table):
-    def __init__(self, *args, **kwargs):
-        super(LimitedTable, self).__init__(*args, **kwargs)
+class LibOwlSensorData(Structure):
+    _fields_ = [
+        ('name', c_char_p),
+        ('index', c_int64),
+        ('epoch', c_double),
+        ('type', c_int),
+        ('value', c_int)]
 
-def init_db(db, cursor, sensors):
-    cursor.execute('''
-        CREATE TABLE IF NOT EXISTS
-            category_type(
-                id INTEGER PRIMARY KEY,
-                name TEXT NOT NULL,
-                UNIQUE(name)
-            )
-    ''')
-    cursor.execute('''
-        CREATE TABLE IF NOT EXISTS
-            sensors(
-                id INTEGER PRIMARY KEY,
-                type_id INTEGER NOT NULL,
-                name TEXT NOT NULL,
-                FOREIGN KEY(type_id) REFERENCES category_type(id),
-                UNIQUE(type_id, name)
-            )
-    ''')
-    # Note: data(id) can be used to determine if time in data(epoch)
-    # has run backwards.
-    cursor.execute('''
-        CREATE TABLE IF NOT EXISTS
-            data(
-                id INTEGER PRIMARY KEY,
-                sensor_id INTEGER NOT NULL,
-                value INTEGER NOT NULL,
-                epoch INTEGER NOT NULL,
-                FOREIGN KEY(sensor_id) REFERENCES sensors(id)
-            )
-    ''')
+class LibOwlFilterData(Union):
+    _fields_ = [
+        ('mdouble', c_double),
+        ('mi64', c_int64)]
 
-    for sensor in sensors:
-        cursor.execute('''
-            INSERT OR IGNORE INTO category_type(name) VALUES (?)
-        ''', (sensor['type'],))
-        cursor.execute('''
-            INSERT OR IGNORE INTO sensors(name, type_id) VALUES
-                (?, (SELECT id from category_type WHERE name=(?)))
-        ''', (sensor['name'], sensor['type']))
+class LibOwlFilter(Structure):
+    _fields_ = [
+        ('type', c_int),
+        ('op', c_int),
+        ('data', LibOwlFilterData)]
 
-    db.commit()
+SENSOR_TEMPERATURE = 0
+LIBOWL_OP_GREATER_THAN = 0
+LIBOWL_OP_GREATER_EQUAL = 1
+LIBOWL_OP_LESS_THAN = 2
+LIBOWL_OP_LESS_EQUAL = 3
+LIBOWL_OP_EQUAL = 4
 
-def add_value(db, cursor, type, name, value):
-    cursor.execute('''
-        INSERT INTO data(sensor_id, value, epoch) VALUES (
-            (SELECT id from sensors WHERE type_id=(SELECT id from category_type WHERE name=(?)) AND name=(?)),
-            ?, unixepoch('now'))
-        ''', (type, name, value))
+class LibOwl:
+    def __init__(self, path):
+        self.lib = cdll.LoadLibrary("libowl.so")
+        self.owl = c_void_p()
+        ret = self.lib.libowl_open(byref(self.owl), c_char_p(path.encode('utf-8')), 0)
+        if ret != 0:
+            raise OSError(ret, os.strerror(ret), 'Failed opening db')
 
-def get_values(db, cursor, id):
-    # Read data since id
-    res = cursor.execute('''
-        SELECT
-            A.id,
-            (SELECT name from category_type WHERE id = S.type_id),
-            S.name,
-            A.value,
-            A.epoch
-        FROM data as A
-        INNER JOIN sensors AS S on S.id = A.sensor_id
-        WHERE A.id >= (?)
-        ORDER BY A.id ASC
-        LIMIT 100
-    ''', (id,))
-    return res.fetchall()
-
-def temperature():
-    return random.randrange(18, 22, 1)
-
-uptime_stored = -1
-def uptime():
-    global uptime_stored
-    uptime_stored += 1
-    return uptime_stored
+    def __del__(self):
+        if (self.owl):
+            self.lib.libowl_close(self.owl)
+    def read(self, limit, after=None, before=None):
+        # create filters
+        filters = []
+        if after:
+            filters.append((self.lib.libowl_filter_epoch, c_int(LIBOWL_OP_GREATER_THAN), c_double(after)))
+        if before:
+            filters.append((self.lib.libowl_filter_epoch, c_int(LIBOWL_OP_LESS_THAN), c_double(before)))
+        c_filter_array_type = LibOwlFilter * len(filters)
+        c_filter_array = c_filter_array_type()
+        for index, filter in enumerate(filters):
+            ret = filter[0](byref(c_filter_array[index]), filter[1], filter[2])
+            if (ret != 0):
+                raise OSError(ret, os.strerror(ret), 'Failed creating filter')
+        # create data array
+        c_data_array_type = LibOwlSensorData * limit
+        c_data_array = c_data_array_type()
+        c_size = c_size_t(limit)
+        # work
+        out = []
+        try:
+            ret = self.lib.libowl_read(self.owl, byref(c_filter_array), c_size_t(len(c_filter_array)),
+                                                byref(c_data_array), byref(c_size))
+            if ret != 0:
+                raise OSError(ret, os.strerror(ret), 'Failed reading db')
+        finally:
+            for data in c_data_array[:c_size.value]:
+                type = 'UNKNOWN'
+                if data.type == SENSOR_TEMPERATURE:
+                    type = 'TEMP'
+                out.append((data.name.decode('utf-8'), data.epoch, type, data.value))
+                self.lib.libowl_sensor_data_free(byref(data))
+        return out
 
 def main():
     parser = argparse.ArgumentParser(description='Logger separated in daemon writer and client reader(s)')
@@ -95,54 +86,18 @@ def main():
     parser.add_argument('--debug', action='store_true', help='Debug output')
     args = parser.parse_args()
 
-    # This should be a config file provided on cmdline
-    sensors = [
-        {'type': 'temperature', 'name': 'cpu', 'func': temperature},
-        {'type': 'monotonic', 'name': 'uptime', 'func': uptime},
-    ]
+    db = LibOwl(args.db)
 
-    # Open db
-    # For single writer and multiple readers WAL should be considered:
-    # https://sqlite.org/wal.html
-    db = sqlite3.connect(args.db)
-    if args.debug:
-        db.set_trace_callback(print)
-    cursor = db.cursor()
+    next_epoch = 0.0
+    while True:
+        data = db.read(50, next_epoch)
+        for name, epoch, type, value in data:
+            next_epoch = epoch
+            datestr = datetime.fromtimestamp(epoch, timezone.utc)
+            print('[{}] ({}) {}: {}'.format(datestr, type, name, value))
 
-    # Initialize db
-    init_db(db, cursor, sensors)
-
-    # Prepare screen layout
-    # How to manage screen resize?
-    layout = Layout(name='root')
-    layout.split_row(Layout(name='left'), Layout(name='right'))
-
-    # Prepare table for viewing
-    table = LimitedTable()
-    table.add_column('date')
-    table.add_column('type')
-    table.add_column('name')
-    table.add_column('value')
-
-    next_id = 0
-    with Live(layout, refresh_per_second=4) as live:
-        while True:
-            # Retrieve data
-            for id, type, name, value, epoch in get_values(db, cursor, next_id):
-                date = time.strftime('%Y-%m-%d %H:%M:%S', time.gmtime(epoch))
-                table.add_row(date, type, name, str(value))
-                if id >= next_id:
-                    next_id = id + 1
-            layout['left'].update(table)
-
-            # Add data -> This should be a separate process
-            for sensor in sensors:
-                add_value(db, cursor, sensor['type'], sensor['name'], sensor['func']())
-            db.commit()
-
+        if not data:
             time.sleep(1)
-
-            live.console.print('loop: {}'.format(next_id))
 
     sys.exit(1)
 
