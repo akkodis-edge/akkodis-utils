@@ -59,11 +59,34 @@ int libowl_next(struct libowl* owl, int timeout_ms);
 struct libowl_sensor_data {
 	char *name;
 	int64_t index;
-	time_t epoch;
+	double epoch;
 	int type;
 	int value;
 };
-int libowl_read(struct libowl* owl, int64_t index, struct libowl_sensor_data* data, size_t* size);
+enum libowl_sensor_filter_type {
+	LIBOWL_FILTER_EPOCH,
+	LIBOWL_FILTER_INDEX,
+};
+enum libowl_sensor_filter_op {
+	LIBOWL_OP_GREATER_THAN,
+	LIBOWL_OP_GREATER_EQUAL,
+	LIBOWL_OP_LESS_THAN,
+	LIBOWL_OP_LESS_EQUAL,
+	LIBOWL_OP_EQUAL,
+};
+struct libowl_filter {
+	enum libowl_sensor_filter_type type;
+	enum libowl_sensor_filter_op op;
+	union {
+		double mdouble;
+		int64_t mi64;
+	} data;
+};
+
+int libowl_filter_epoch(struct libowl_filter* filter, int op, double epoch);
+int libowl_filter_index(struct libowl_filter* filter, int op, int64_t index);
+
+int libowl_read(struct libowl* owl, const struct libowl_filter* filters, size_t filter_size, struct libowl_sensor_data* data, size_t* size);
 int libowl_sensor_data_free(struct libowl_sensor_data* data);
 
 #ifdef __cplusplus

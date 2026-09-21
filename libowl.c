@@ -187,7 +187,7 @@ static int libowl_init_database(struct libowl* owl)
 			"id INTEGER PRIMARY KEY,"
 			"name TEXT NOT NULL,"
 		   "UNIQUE(name)"
-		")");
+		") STRICT");
 	if (r != 0)
 		return r;
 
@@ -202,7 +202,7 @@ static int libowl_init_database(struct libowl* owl)
 				"name TEXT NOT NULL,"
 				"FOREIGN KEY(type_id) REFERENCES category_type(id),"
 				"UNIQUE(type_id, name)"
-			")");
+			") STRICT");
 	if (r != 0)
 		return r;
 
@@ -212,9 +212,9 @@ static int libowl_init_database(struct libowl* owl)
 				"id INTEGER PRIMARY KEY,"
 				"sensor_id INTEGER NOT NULL,"
 				"value INTEGER NOT NULL,"
-				"epoch INTEGER NOT NULL,"
+				"epoch REAL NOT NULL,"
 				"FOREIGN KEY(sensor_id) REFERENCES sensors(id)"
-			")");
+			") STRICT");
 	if (r != 0)
 		return r;
 
@@ -376,7 +376,7 @@ static int libowl_sensor_push(struct libowl* owl, struct libowl_sensor* sensor, 
 	int r = sqlite3_prepare_v2(owl->db,
 		"INSERT INTO data(sensor_id, value, epoch) VALUES "
 			"((SELECT id from sensors WHERE type_id=(SELECT id from category_type WHERE name=(?)) AND name=(?)),"
-			"?, unixepoch('now'))",
+			"?, unixepoch('now', 'subsec'))",
 		-1, &stmt, NULL);
 	if (r != SQLITE_OK) {
 		if (is_debug(owl))
@@ -483,25 +483,127 @@ int libowl_sensor_data_free(struct libowl_sensor_data* data)
 	return 0;
 }
 
-int libowl_read(struct libowl* owl, int64_t index, struct libowl_sensor_data* data, size_t* size)
+int libowl_filter_index(struct libowl_filter* filter, int op, int64_t index)
+{
+	if (op > LIBOWL_OP_EQUAL)
+		return -EINVAL;
+	filter->type = LIBOWL_FILTER_INDEX;
+	filter->op = op;
+	filter->data.mi64 = index;
+	return 0;
+}
+
+int libowl_filter_epoch(struct libowl_filter* filter, int op, double epoch)
+{
+	if (op > LIBOWL_OP_EQUAL)
+		return -EINVAL;
+	filter->type = LIBOWL_FILTER_EPOCH;
+	filter->op = op;
+	filter->data.mdouble = epoch;
+	return 0;
+}
+
+/* Free string on failure and return NULL */
+char* append_str(char** base, const char* append)
+{
+	const size_t base_len = *base == NULL ? 0 : strlen(*base);
+	const size_t append_len = strlen(append);
+	char *str = realloc(*base, base_len + append_len + 1);
+	if (str == NULL) {
+		free(*base);
+		*base = NULL;
+		return NULL;
+	}
+	*base = str;
+	memcpy(*base + base_len, append, append_len + 1);
+	return *base;
+}
+
+static const char* op_to_str(int op)
+{
+	switch (op) {
+	case LIBOWL_OP_GREATER_THAN:
+		return ">";
+	case LIBOWL_OP_GREATER_EQUAL:
+		return ">=";
+	case LIBOWL_OP_LESS_THAN:
+		return "<";
+	case LIBOWL_OP_LESS_EQUAL:
+		return "<=";
+	case LIBOWL_OP_EQUAL:
+		return "==";
+	}
+	return "XX";
+}
+
+int libowl_read(struct libowl* owl, const struct libowl_filter* filters, size_t filter_size, struct libowl_sensor_data* data, size_t* size)
 {
 	if (owl == NULL || data == NULL || *size == 0 || *size > INT64_MAX)
 		return -EINVAL;
+	char *sql = NULL;
+	sql = append_str(&sql,
+			"SELECT "
+				"A.id,"
+				"(SELECT name from category_type WHERE id = S.type_id),"
+				"S.name,"
+				"A.value,"
+				"A.epoch"
+			" FROM data as A"
+			" INNER JOIN sensors AS S on S.id = A.sensor_id"
+			" WHERE");
+
+	if (sql == NULL)
+		return -ENOMEM;
+
+	struct libowl_filter default_filter;
+	/* use default filter if none are provided */
+	if (filter_size == 0) {
+		libowl_filter_index(&default_filter, LIBOWL_OP_GREATER_EQUAL, 0);
+		filters = &default_filter;
+		filter_size = 1;
+	}
+
+	for (size_t i = 0; i < filter_size; ++i) {
+		const int buf_size = 64;
+		char buf[buf_size];
+		char *field = NULL;
+		switch (filters[i].type) {
+		case LIBOWL_FILTER_INDEX:
+			field = "A.id";
+			break;
+		case LIBOWL_FILTER_EPOCH:
+			field = "A.epoch";
+			break;
+		}
+		if (field == NULL) {
+			free(sql);
+			return -EINVAL;
+		}
+
+		const int bytes = snprintf(buf, buf_size, " %s%s %s (?)",
+				i > 0 ? "AND " : "", field, op_to_str(filters[i].op));
+		if (bytes < 0) {
+			free(sql);
+			return -errno;
+		}
+		if (bytes >= buf_size) {
+			free(sql);
+			return -ENOMEM;
+		}
+		sql = append_str(&sql, buf);
+		if (sql == NULL)
+			return -ENOMEM;
+	}
+
+	sql = append_str(&sql,
+			" ORDER BY A.id ASC"
+			" LIMIT (?)");
+	if (sql == NULL)
+		return -ENOMEM;
+
 
 	sqlite3_stmt *stmt = NULL;
-	int r = sqlite3_prepare_v2(owl->db,
-		"SELECT "
-			"A.id,"
-			"(SELECT name from category_type WHERE id = S.type_id),"
-			"S.name,"
-			"A.value,"
-			"A.epoch"
-		" FROM data as A"
-		" INNER JOIN sensors AS S on S.id = A.sensor_id"
-		" WHERE A.id >= (?)"
-		" ORDER BY A.id ASC"
-		" LIMIT (?)",
-		-1, &stmt, NULL);
+	int r = sqlite3_prepare_v2(owl->db, sql, -1, &stmt, NULL);
 	if (r != SQLITE_OK) {
 		if (is_debug(owl))
 			printf("libowl: error: sqlite3_prepare_v2(read) [%d]: %s\n", r, sqlite3_errstr(r));
@@ -509,14 +611,32 @@ int libowl_read(struct libowl* owl, int64_t index, struct libowl_sensor_data* da
 		goto exit;
 	}
 
-	r = sqlite3_bind_int64(stmt, 1, index);
-	if (r != SQLITE_OK) {
-		if (is_debug(owl))
-			printf("libowl: error: sqlite3_bind_int64(read) [%d]: %s\n", r, sqlite3_errstr(r));
-		r = -EBADF;
-		goto exit;
+	int column = 1;
+
+	for (size_t i = 0; i < filter_size; ++i) {
+		r = SQLITE_NOTFOUND;
+		switch (filters[i].type) {
+		case LIBOWL_FILTER_INDEX:
+			r = sqlite3_bind_int64(stmt, column, filters[i].data.mi64);
+			break;
+		case LIBOWL_FILTER_EPOCH:
+			r = sqlite3_bind_double(stmt, column, filters[i].data.mdouble);
+			break;
+		}
+		if (r == SQLITE_NOTFOUND) {
+			r = -EINVAL;
+			goto exit;
+		}
+		if (r != SQLITE_OK) {
+			if (is_debug(owl))
+				printf("libowl: error: sqlite3_bind(read) [%d]: %s\n", r, sqlite3_errstr(r));
+			r = -EBADF;
+			goto exit;
+		}
+		column++;
 	}
-	r = sqlite3_bind_int64(stmt, 2, (int64_t) *size);
+
+	r = sqlite3_bind_int64(stmt, column, (int64_t) *size);
 	if (r != SQLITE_OK) {
 		if (is_debug(owl))
 			printf("libowl: error: sqlite3_bind_int64(read) [%d]: %s\n", r, sqlite3_errstr(r));
@@ -535,7 +655,7 @@ int libowl_read(struct libowl* owl, int64_t index, struct libowl_sensor_data* da
 			data[pos].type = libowl_sensor_type_int((const char*) sqlite3_column_text(stmt, 1));
 			data[pos].name = strdup((const char*) sqlite3_column_text(stmt, 2));
 			data[pos].value = sqlite3_column_int64(stmt, 3);
-			data[pos].epoch = (time_t) sqlite3_column_int64(stmt, 4);
+			data[pos].epoch = sqlite3_column_double(stmt, 4);
 			pos++;
 			break;
 		default:
@@ -550,6 +670,8 @@ int libowl_read(struct libowl* owl, int64_t index, struct libowl_sensor_data* da
 	r = 0;
 
 exit:
+	if (sql != NULL)
+		free(sql);
 	if (stmt != NULL)
 		sqlite3_finalize(stmt);
 	return r;

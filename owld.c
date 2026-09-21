@@ -357,7 +357,14 @@ int main (int argc, char **argv)
 			while (true) {
 				size_t sensor_data_size = 50;
 				struct libowl_sensor_data sensor_data[sensor_data_size];
-				r = libowl_read(owl, index, sensor_data, &sensor_data_size);
+				struct libowl_filter index_filter;
+				if (libowl_filter_index(&index_filter, LIBOWL_OP_GREATER_EQUAL, index) != 0) {
+					fprintf(stderr, "failed creating filter\n");
+					r = EFAULT;
+					goto exit;
+				}
+
+				r = libowl_read(owl, &index_filter, 1, sensor_data, &sensor_data_size);
 				if (r != 0) {
 					fprintf(stderr, "failed reading sensors [%d]: %s\n", -update_count, strerror(-update_count));
 					r = -update_count;
@@ -369,7 +376,8 @@ int main (int argc, char **argv)
 
 				for (size_t i = 0; i < sensor_data_size; ++i) {
 					char timestr[200];
-					if (strftime(timestr, sizeof(timestr), "%Y-%m-%d %T", gmtime(&sensor_data[i].epoch)) < 1)
+					const time_t epoch = (time_t) sensor_data[i].epoch; /* double to time_t, drop fractional seconds */
+					if (strftime(timestr, sizeof(timestr), "%Y-%m-%d %T", gmtime(&epoch)) < 1)
 						timestr[0] = '\0';
 					printf("[%s] %s: %d\n", timestr, sensor_data[i].name, sensor_data[i].value);
 					if (sensor_data[i].index >= index)
