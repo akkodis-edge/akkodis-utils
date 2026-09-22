@@ -225,4 +225,25 @@ TEST_CASE("libowl_read") {
 		sensor_data_equal(&test.data[2], &expected[5]);
 	}
 
+	SECTION("Filter by epoch -- all") {
+		struct test_data test;
+		auto cleanup = prepare_data(&test, database_size + 1);
+		struct libowl_filter filter;
+		REQUIRE(libowl_filter_epoch(&filter, LIBOWL_OP_GREATER_EQUAL, 0.0) == 0);
+		REQUIRE(libowl_read(owl, 0, &filter, 1, test.data, test.size) == 9);
+		for (size_t i = 0; i < database_size; ++i)
+			sensor_data_equal(&test.data[i], &expected[i]);
+	}
+
+	SECTION("Filter by epoch -- middle three") {
+		struct test_data test;
+		auto cleanup = prepare_data(&test, 4);
+		struct libowl_filter filters[2];
+		REQUIRE(libowl_filter_epoch(&filters[0], LIBOWL_OP_GREATER_THAN, 0.0) == 0);
+		REQUIRE(libowl_filter_epoch(&filters[1], LIBOWL_OP_LESS_THAN, 20.0) == 0);
+		REQUIRE(libowl_read(owl, 0, filters, 2, test.data, test.size) == 3);
+		sensor_data_equal(&test.data[0], &expected[3]);
+		sensor_data_equal(&test.data[1], &expected[4]);
+		sensor_data_equal(&test.data[2], &expected[5]);
+	}
 }

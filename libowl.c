@@ -645,9 +645,11 @@ int libowl_read(struct libowl* owl, int flags, const struct libowl_filter* filte
 			return -ENOMEM;
 	}
 
-	sql = append_str(&sql,
-			" ORDER BY A.id ASC"
-			" LIMIT (?)");
+	const int is_descending = (flags & LIBOWL_READ_DESCENDING) == LIBOWL_READ_DESCENDING;
+	sql = append_str(&sql, is_descending ? " ORDER BY A.id DESC" : " ORDER BY A.id ASC");
+	if (sql == NULL)
+		return -ENOMEM;
+	sql = append_str(&sql, " LIMIT (?)");
 	if (sql == NULL)
 		return -ENOMEM;
 
