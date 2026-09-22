@@ -1,4 +1,5 @@
 #include <stdlib.h>
+#include <math.h>
 #include <string.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -385,14 +386,49 @@ exit:
 	return r;
 }
 
+/* Free string on failure and return NULL */
+char* append_str(char** base, const char* append)
+{
+	const size_t base_len = *base == NULL ? 0 : strlen(*base);
+	const size_t append_len = strlen(append);
+	char *str = realloc(*base, base_len + append_len + 1);
+	if (str == NULL) {
+		free(*base);
+		*base = NULL;
+		return NULL;
+	}
+	*base = str;
+	memcpy(*base + base_len, append, append_len + 1);
+	return *base;
+}
+
 static int libowl_sensor_push(struct libowl* owl, struct libowl_sensor* sensor, int value)
 {
-	sqlite3_stmt *stmt = NULL;
-	int r = sqlite3_prepare_v2(owl->db,
+	const int use_monotonic = (owl->flags & LIBOWL_TIMESTAMP_MONOTONIC) == LIBOWL_TIMESTAMP_MONOTONIC;
+	double time = 0;
+
+	if (use_monotonic) {
+		struct timespec time_now;
+		int r = owl->monotonic(&time_now, owl->monotonic_priv);
+		if (r != 0)
+			return r;
+		time = (double) time_now.tv_sec + ((double) time_now.tv_nsec / 1.0e9);
+	}
+
+	char* sql = NULL;
+	sql = append_str(&sql,
 		"INSERT INTO data(sensor_id, value, epoch) VALUES "
 			"((SELECT id from sensors WHERE type_id=(SELECT id from category_type WHERE name=(?)) AND name=(?)),"
-			"?, unixepoch('now', 'subsec'))",
-		-1, &stmt, NULL);
+			"?, ");
+	if (sql == NULL)
+		return -ENOMEM;
+	sql = append_str(&sql,
+		use_monotonic ? "(?))" : "unixepoch('now', 'subsec'))");
+	if (sql == NULL)
+		return -ENOMEM;
+
+	sqlite3_stmt *stmt = NULL;
+	int r = sqlite3_prepare_v2(owl->db, sql, -1, &stmt, NULL);
 	if (r != SQLITE_OK) {
 		if (is_debug(owl))
 			printf("libowl: error: sqlite3_prepare_v2(sensor_push) [%d]: %s\n", r, sqlite3_errstr(r));
@@ -400,27 +436,21 @@ static int libowl_sensor_push(struct libowl* owl, struct libowl_sensor* sensor, 
 		goto exit;
 	}
 
-	r = sqlite3_bind_text(stmt, 1, libowl_sensor_type_str(sensor->type), -1, SQLITE_STATIC);
+	if (r == SQLITE_OK)
+		r = sqlite3_bind_text(stmt, 1, libowl_sensor_type_str(sensor->type), -1, SQLITE_STATIC);
+	if (r == SQLITE_OK)
+		r = sqlite3_bind_text(stmt, 2, sensor->name, -1, SQLITE_STATIC);
+	if (r == SQLITE_OK)
+		r = sqlite3_bind_int(stmt, 3, value);
+	if (r == SQLITE_OK && use_monotonic)
+		r = sqlite3_bind_double(stmt, 4, time);
 	if (r != SQLITE_OK) {
 		if (is_debug(owl))
-			printf("libowl: error: sqlite3_bind_text(insert_sensor) [%d]: %s\n", r, sqlite3_errstr(r));
+			printf("libowl: error: sqlite3_bind(insert_sensor) [%d]: %s\n", r, sqlite3_errstr(r));
 		r = -EBADF;
 		goto exit;
 	}
-	r = sqlite3_bind_text(stmt, 2, sensor->name, -1, SQLITE_STATIC);
-	if (r != SQLITE_OK) {
-		if (is_debug(owl))
-			printf("libowl: error: sqlite3_bind_text(insert_sensor) [%d]: %s\n", r, sqlite3_errstr(r));
-		r = -EBADF;
-		goto exit;
-	}
-	r = sqlite3_bind_int(stmt, 3, value);
-	if (r != SQLITE_OK) {
-		if (is_debug(owl))
-			printf("libowl: error: sqlite3_bind_int(insert_sensor) [%d]: %s\n", r, sqlite3_errstr(r));
-		r = -EBADF;
-		goto exit;
-	}
+
 	r = sqlite3_step(stmt);
 	if (r != SQLITE_DONE) {
 		if (is_debug(owl))
@@ -431,6 +461,7 @@ static int libowl_sensor_push(struct libowl* owl, struct libowl_sensor* sensor, 
 
 	r = 0;
 exit:
+	free(sql);
 	if (stmt != NULL)
 		sqlite3_finalize(stmt);
 	return r;
@@ -516,7 +547,7 @@ int libowl_sensor_data_free(struct libowl_sensor_data* data)
 {
 	if (data != NULL) {
 		if (data->name != NULL) {
-			free(data->name);
+			free((char*) data->name);
 			data->name = NULL;
 		}
 	}
@@ -543,22 +574,6 @@ int libowl_filter_epoch(struct libowl_filter* filter, int op, double epoch)
 	return 0;
 }
 
-/* Free string on failure and return NULL */
-char* append_str(char** base, const char* append)
-{
-	const size_t base_len = *base == NULL ? 0 : strlen(*base);
-	const size_t append_len = strlen(append);
-	char *str = realloc(*base, base_len + append_len + 1);
-	if (str == NULL) {
-		free(*base);
-		*base = NULL;
-		return NULL;
-	}
-	*base = str;
-	memcpy(*base + base_len, append, append_len + 1);
-	return *base;
-}
-
 static const char* op_to_str(int op)
 {
 	switch (op) {
@@ -576,10 +591,10 @@ static const char* op_to_str(int op)
 	return "XX";
 }
 
-int libowl_read(struct libowl* owl, int flags, const struct libowl_filter* filters, size_t filter_size, struct libowl_sensor_data* data, size_t* size)
+int libowl_read(struct libowl* owl, int flags, const struct libowl_filter* filters, size_t filter_size, struct libowl_sensor_data* data, size_t size)
 {
 	(void) flags;
-	if (owl == NULL || data == NULL || *size == 0 || *size > INT64_MAX)
+	if (owl == NULL || filters == NULL || filter_size == 0 || data == NULL || size == 0 || size > INT_MAX)
 		return -EINVAL;
 	char *sql = NULL;
 	sql = append_str(&sql,
@@ -596,15 +611,7 @@ int libowl_read(struct libowl* owl, int flags, const struct libowl_filter* filte
 	if (sql == NULL)
 		return -ENOMEM;
 
-	size_t pos = 0;
-
-	struct libowl_filter default_filter;
-	/* use default filter if none are provided */
-	if (filter_size == 0) {
-		libowl_filter_index(&default_filter, LIBOWL_OP_GREATER_EQUAL, 0);
-		filters = &default_filter;
-		filter_size = 1;
-	}
+	int pos = 0;
 
 	for (size_t i = 0; i < filter_size; ++i) {
 		const int buf_size = 64;
@@ -679,10 +686,10 @@ int libowl_read(struct libowl* owl, int flags, const struct libowl_filter* filte
 		column++;
 	}
 
-	r = sqlite3_bind_int64(stmt, column, (int64_t) *size);
+	r = sqlite3_bind_int(stmt, column, (int) size);
 	if (r != SQLITE_OK) {
 		if (is_debug(owl))
-			printf("libowl: error: sqlite3_bind_int64(read) [%d]: %s\n", r, sqlite3_errstr(r));
+			printf("libowl: error: sqlite3_bind_int(read) [%d]: %s\n", r, sqlite3_errstr(r));
 		r = -EBADF;
 		goto exit;
 	}
@@ -709,16 +716,15 @@ int libowl_read(struct libowl* owl, int flags, const struct libowl_filter* filte
 		}
 	} while (r != SQLITE_DONE);
 
-	*size = pos;
-	r = 0;
+	r = pos;
 
 exit:
 	if (sql != NULL)
 		free(sql);
 	if (stmt != NULL)
 		sqlite3_finalize(stmt);
-	if (r != 0) {
-		for (size_t i = 0; i < pos; ++i)
+	if (r < 0) {
+		for (int i = 0; i < pos; ++i)
 			libowl_sensor_data_free(&data[i]);
 	}
 	return r;

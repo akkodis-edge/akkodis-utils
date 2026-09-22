@@ -4,10 +4,21 @@
 #define CATCH_CONFIG_MAIN
 #include <catch2/catch_test_macros.hpp>
 
+struct test_data {
+	struct libowl_sensor_data *data;
+	size_t size;
+};
+
 struct Deleter {
 	void operator()(struct libowl* owl)
 	{
 		libowl_close(owl);
+	}
+	void operator()(struct test_data* test)
+	{
+		for (size_t i = 0; i < test->size; ++i)
+			libowl_sensor_data_free(&test->data[i]);
+		free(test->data);
 	}
 };
 
@@ -50,8 +61,9 @@ TEST_CASE("single sensor") {
 	REQUIRE(libowl_update(owl) == 1);
 
 	struct libowl_sensor_data sdat {};
-	size_t sdat_size = 1;
-	REQUIRE(libowl_read(owl, 0, nullptr, 0, &sdat, &sdat_size) == 0);
+	struct libowl_filter filter;
+	REQUIRE(libowl_filter_index(&filter, LIBOWL_OP_GREATER_EQUAL, 0) == 0);
+	REQUIRE(libowl_read(owl, 0, &filter, 1, &sdat, 1) == 1);
 	REQUIRE(strcmp(sdat.name, "test") == 0);
 	REQUIRE(sdat.value == 99);
 	REQUIRE(libowl_sensor_data_free(&sdat) == 0);
@@ -110,3 +122,107 @@ TEST_CASE("libowl_update_delay round up nano to milli") {
 	REQUIRE(libowl_update_delay(owl) == 0);
 }
 
+static int monotonic_s(struct timespec* ts, void* priv)
+{
+	int *time_sec = reinterpret_cast<int*>(priv);
+	ts->tv_sec = *time_sec;
+	ts->tv_nsec = 0;
+	return 0;
+}
+
+static std::unique_ptr<struct test_data, Deleter> prepare_data(struct test_data* test, size_t entries)
+{
+	test->size = entries;
+	test->data = (struct libowl_sensor_data*) calloc(test->size, sizeof(*(test->data)));
+	REQUIRE(test->data != nullptr);
+	std::unique_ptr<struct test_data, Deleter> cleanup(test);
+	return cleanup;
+}
+
+static void sensor_data_equal(const struct libowl_sensor_data* lhs, const struct libowl_sensor_data* rhs)
+{
+	REQUIRE(strcmp(lhs->name, rhs->name) == 0);
+	REQUIRE(lhs->index == rhs->index);
+	/* compare only seconds, drop fractions */
+	REQUIRE((int64_t) lhs->epoch == (int64_t) rhs->epoch);
+	REQUIRE(lhs->type == rhs->type);
+	REQUIRE(lhs->value == rhs->value);
+}
+
+TEST_CASE("libowl_read") {
+	/* Prepare database with separate entries, use our monotonic with second resolution to avoid issues with epoch double precision */
+	struct libowl *owl = nullptr;
+	REQUIRE(libowl_open(&owl, "file::memory:?cache=shared", LIBOWL_OPEN_WRITE | LIBOWL_LOGLEVEL_DEBUG | LIBOWL_TIMESTAMP_MONOTONIC) == 0);
+	auto at_exit = std::unique_ptr<struct libowl, Deleter>(owl);
+	int seconds = 0;
+	REQUIRE(libowl_set_monotonic(owl, monotonic_s, &seconds) == 0);
+
+	int sensor1_value = 10;
+	int sensor2_value = 20;
+	int sensor3_value = 30;
+	REQUIRE(libowl_add_sensor(owl, LIBOWL_SENSOR_TEMP, "sensor1", 0, &dummy_ops, 0, &sensor1_value) == 0);
+	REQUIRE(libowl_add_sensor(owl, LIBOWL_SENSOR_TEMP, "sensor2", 0, &dummy_ops, 0, &sensor2_value) == 0);
+	REQUIRE(libowl_add_sensor(owl, LIBOWL_SENSOR_TEMP, "sensor3", 0, &dummy_ops, 0, &sensor3_value) == 0);
+
+	/* Add one reading for each sensor at three separate points in time */
+	REQUIRE(libowl_update(owl) == 3);
+	/* A second reading after 10 seconds */
+	sensor1_value++;
+	sensor2_value++;
+	sensor3_value++;
+	seconds = 10;
+	REQUIRE(libowl_update(owl) == 3);
+	/* A third reading after 10 more seconds */
+	sensor1_value++;
+	sensor2_value++;
+	sensor3_value++;
+	seconds = 20;
+	REQUIRE(libowl_update(owl) == 3);
+	/* 9 readings available in database */
+	const size_t database_size = 9;
+	/* expected data in database */
+	const struct libowl_sensor_data expected[database_size] = {
+		{"sensor1", 1, 0.0, LIBOWL_SENSOR_TEMP, 10},
+		{"sensor2", 2, 0.0, LIBOWL_SENSOR_TEMP, 20},
+		{"sensor3", 3, 0.0, LIBOWL_SENSOR_TEMP, 30},
+		{"sensor1", 4, 10.0, LIBOWL_SENSOR_TEMP, 11},
+		{"sensor2", 5, 10.0, LIBOWL_SENSOR_TEMP, 21},
+		{"sensor3", 6, 10.0, LIBOWL_SENSOR_TEMP, 31},
+		{"sensor1", 7, 20.0, LIBOWL_SENSOR_TEMP, 12},
+		{"sensor2", 8, 20.0, LIBOWL_SENSOR_TEMP, 22},
+		{"sensor3", 9, 20.0, LIBOWL_SENSOR_TEMP, 32},
+	};
+
+	SECTION("Filter by index -- all") {
+		struct test_data test;
+		auto cleanup = prepare_data(&test, database_size + 1);
+		struct libowl_filter filter;
+		REQUIRE(libowl_filter_index(&filter, LIBOWL_OP_GREATER_EQUAL, 1) == 0);
+		REQUIRE(libowl_read(owl, 0, &filter, 1, test.data, test.size) == 9);
+		for (size_t i = 0; i < database_size; ++i)
+			sensor_data_equal(&test.data[i], &expected[i]);
+	}
+
+	SECTION("Filter by index -- all, descending") {
+		struct test_data test;
+		auto cleanup = prepare_data(&test, database_size + 1);
+		struct libowl_filter filter;
+		REQUIRE(libowl_filter_index(&filter, LIBOWL_OP_GREATER_EQUAL, 1) == 0);
+		REQUIRE(libowl_read(owl, LIBOWL_READ_DESCENDING, &filter, 1, test.data, test.size) == 9);
+		for (size_t i = 0; i < database_size; ++i)
+			sensor_data_equal(&test.data[i], &expected[database_size - 1 - i]);
+	}
+
+	SECTION("Filter by index -- middle three") {
+		struct test_data test;
+		auto cleanup = prepare_data(&test, 4);
+		struct libowl_filter filters[2];
+		REQUIRE(libowl_filter_index(&filters[0], LIBOWL_OP_GREATER_THAN, 3) == 0);
+		REQUIRE(libowl_filter_index(&filters[1], LIBOWL_OP_LESS_THAN, 7) == 0);
+		REQUIRE(libowl_read(owl, 0, filters, 2, test.data, test.size) == 3);
+		sensor_data_equal(&test.data[0], &expected[3]);
+		sensor_data_equal(&test.data[1], &expected[4]);
+		sensor_data_equal(&test.data[2], &expected[5]);
+	}
+
+}

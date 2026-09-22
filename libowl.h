@@ -15,8 +15,9 @@ struct libowl;
  *
  * Returns 0 on success or negative errno for errors. */
 enum libowl_open_flags {
-	LIBOWL_OPEN_WRITE = 1 << 0,     /* Allow writing, in addition to reading */
-	LIBOWL_LOGLEVEL_DEBUG = 1 << 1, /* Output debug messages */
+	LIBOWL_OPEN_WRITE = 1 << 0,          /* Allow writing, in addition to reading */
+	LIBOWL_LOGLEVEL_DEBUG = 1 << 1,      /* Output debug messages */
+	LIBOWL_TIMESTAMP_MONOTONIC = 1 << 2, /* Get sensors timestamps (epoch) from monotonic instead of realtime clock */
 };
 int libowl_open(struct libowl** owl, const char* path, int flags);
 int libowl_close(struct libowl* owl);
@@ -58,7 +59,7 @@ int libowl_update_delay(const struct libowl* owl);
 
 
 struct libowl_sensor_data {
-	char *name;
+	const char *name;
 	int64_t index;
 	double epoch;
 	int type;
@@ -89,18 +90,16 @@ struct libowl_filter {
 int libowl_filter_epoch(struct libowl_filter* filter, int op, double epoch);
 int libowl_filter_index(struct libowl_filter* filter, int op, int64_t index);
 
-/* Read from libowl based on "filters" of "filter_size" into "data" of "size". Number of
- * processed entries is returned in "size".
- * Setting filters to NULL will use a default filter.
+/* Read from libowl based on "filters" of "filter_size" into "data" of "size".
  *
  * Caller is responsible of freeing returned "data", see "libowl_sensor_data_free()".
  *
- * Returns 0 for success or negative errno for error.
+ * Returns number of entries returned in data, negative errno for error.
  */
 enum libowl_read_flags {
 	LIBOWL_READ_DESCENDING = 1 << 0, /* Default is ascending */
 };
-int libowl_read(struct libowl* owl, int flags, const struct libowl_filter* filters, size_t filter_size, struct libowl_sensor_data* data, size_t* size);
+int libowl_read(struct libowl* owl, int flags, const struct libowl_filter* filters, size_t filter_size, struct libowl_sensor_data* data, size_t size);
 int libowl_sensor_data_free(struct libowl_sensor_data* data);
 
 #ifdef __cplusplus
