@@ -444,20 +444,31 @@ exit:
 	return r;
 }
 
-/* Free string on failure and return NULL */
-char* append_str(char** base, const char* append)
+enum statement_option {
+	STATEMENT_OPTION_FREE = 1 << 0, /* set if str should be freed */
+};
+struct libowl_statement_part {
+	const char* str;
+	int options;
+};
+
+static char* join_statement(const struct libowl_statement_part* parts, size_t size)
 {
-	const size_t base_len = *base == NULL ? 0 : strlen(*base);
-	const size_t append_len = strlen(append);
-	char *str = realloc(*base, base_len + append_len + 1);
-	if (str == NULL) {
-		free(*base);
-		*base = NULL;
+	/* Calculate required buffer-size */
+	size_t len = 1; /* final null-terminator */
+	for (size_t i = 0; i < size; ++i)
+		len += strlen(parts[i].str);
+	char *sql = malloc(len);
+	if (sql == NULL)
 		return NULL;
+	size_t pos = 0;
+	for (size_t i = 0; i < size; ++i) {
+		const size_t tmplen = strlen(parts[i].str);
+		memcpy(sql + pos, parts[i].str, tmplen);
+		pos += tmplen;
 	}
-	*base = str;
-	memcpy(*base + base_len, append, append_len + 1);
-	return *base;
+	sql[pos] = '\0';
+	return sql;
 }
 
 static int libowl_sensor_push(struct libowl* owl, struct libowl_sensor* sensor, int value)
@@ -473,17 +484,14 @@ static int libowl_sensor_push(struct libowl* owl, struct libowl_sensor* sensor, 
 		time = (double) time_now.tv_sec + ((double) time_now.tv_nsec / 1.0e9);
 	}
 
-	char* sql = NULL;
-	sql = append_str(&sql,
-		"INSERT INTO data(sensor_id, value, epoch) VALUES "
-			"((SELECT id from sensors WHERE type_id=(SELECT id from category_type WHERE name=(?)) AND name=(?)),"
-			"?, ");
-	if (sql == NULL)
-		return -ENOMEM;
-	sql = append_str(&sql,
-		use_monotonic ? "(?))" : "unixepoch('now', 'subsec'))");
-	if (sql == NULL)
-		return -ENOMEM;
+	const struct libowl_statement_part parts[] = {
+		{.str = "INSERT INTO data(sensor_id, value, epoch) VALUES "
+				"((SELECT id from sensors WHERE type_id=(SELECT id from category_type WHERE name=(?)) AND name=(?)),"
+				"?, ",
+		.options = 0},
+		{.str = use_monotonic ? "(?))" : "unixepoch('now', 'subsec'))",
+		.options = 0},
+	};
 
 	const struct libowl_bind bind[] = {
 		{.col = 1, .type = BIND_TEXT, .data.str = libowl_sensor_type_str(sensor->type)},
@@ -492,11 +500,23 @@ static int libowl_sensor_push(struct libowl* owl, struct libowl_sensor* sensor, 
 		{.col = 4, .type = use_monotonic ? BIND_DOUBLE : BIND_IGNORE, .data.dbl = time},
 	};
 
-	sqlite3_stmt *stmt = libowl_stmt_bind(owl, sql, bind, ARRAY_SIZE(bind));
-	if (stmt == NULL)
-		return -EBADF;
+	sqlite3_stmt *stmt = NULL;
+	char *sql = NULL;
+	int r = 0;
 
-	int r = sqlite3_step(stmt);
+	sql = join_statement(parts, ARRAY_SIZE(parts));
+	if (sql == NULL) {
+		r = -ENOMEM;
+		goto exit;
+	}
+
+	stmt = libowl_stmt_bind(owl, sql, bind, ARRAY_SIZE(bind));
+	if (stmt == NULL) {
+		r = -EBADF;
+		goto exit;
+	}
+
+	r = sqlite3_step(stmt);
 	if (r != SQLITE_DONE) {
 		pr_err(owl, "sqlite3_step(insert_sensor) [%d]: %s\n", r, sqlite3_errstr(r));
 		r = -EBADF;
@@ -505,7 +525,8 @@ static int libowl_sensor_push(struct libowl* owl, struct libowl_sensor* sensor, 
 
 	r = 0;
 exit:
-	free(sql);
+	if (sql != NULL)
+		free(sql);
 	if (stmt != NULL)
 		sqlite3_finalize(stmt);
 	return r;
@@ -642,34 +663,6 @@ static const char* op_to_str(int op)
 		return "==";
 	}
 	return "XX";
-}
-
-enum statement_option {
-	STATEMENT_OPTION_FREE = 1 << 0, /* set if str should be freed */
-};
-struct libowl_statement_part {
-	const char* str;
-	int options;
-};
-
-
-char* join_statement(const struct libowl_statement_part* parts, size_t size)
-{
-	/* Calculate required buffer-size */
-	size_t len = 1; /* final null-terminator */
-	for (size_t i = 0; i < size; ++i)
-		len += strlen(parts[i].str);
-	char *sql = malloc(len);
-	if (sql == NULL)
-		return NULL;
-	size_t pos = 0;
-	for (size_t i = 0; i < size; ++i) {
-		const size_t tmplen = strlen(parts[i].str);
-		memcpy(sql + pos, parts[i].str, tmplen);
-		pos += tmplen;
-	}
-	sql[pos] = '\0';
-	return sql;
 }
 
 static int filter_to_statement_and_bind(const struct libowl_filter* filter, size_t index, int column, struct libowl_statement_part* part, struct libowl_bind* bind)
