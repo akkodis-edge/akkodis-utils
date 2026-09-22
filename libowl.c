@@ -644,111 +644,141 @@ static const char* op_to_str(int op)
 	return "XX";
 }
 
+enum statement_option {
+	STATEMENT_OPTION_FREE = 1 << 0, /* set if str should be freed */
+};
+struct libowl_statement_part {
+	const char* str;
+	int options;
+};
+
+
+char* join_statement(const struct libowl_statement_part* parts, size_t size)
+{
+	/* Calculate required buffer-size */
+	size_t len = 1; /* final null-terminator */
+	for (size_t i = 0; i < size; ++i)
+		len += strlen(parts[i].str);
+	char *sql = malloc(len);
+	if (sql == NULL)
+		return NULL;
+	size_t pos = 0;
+	for (size_t i = 0; i < size; ++i) {
+		const size_t tmplen = strlen(parts[i].str);
+		memcpy(sql + pos, parts[i].str, tmplen);
+		pos += tmplen;
+	}
+	sql[pos] = '\0';
+	return sql;
+}
+
+static int filter_to_statement_and_bind(const struct libowl_filter* filter, size_t index, int column, struct libowl_statement_part* part, struct libowl_bind* bind)
+{
+	char *field = NULL;
+	switch (filter->type) {
+	case LIBOWL_FILTER_INDEX:
+		bind->type = BIND_INT64;
+		bind->data.i64 = filter->data.mi64;
+		field = "A.id";
+		break;
+	case LIBOWL_FILTER_EPOCH:
+		bind->type = BIND_DOUBLE;
+		bind->data.dbl = filter->data.mdouble;
+		field = "A.epoch";
+		break;
+	case LIBOWL_FILTER_NAME:
+		bind->type = BIND_TEXT;
+		bind->data.str = filter->data.str;
+		field = "S.name";
+		break;
+	default:
+		return -EINVAL;
+	}
+	bind->col = column;
+	const int buf_size = 64;
+	char buf[buf_size];
+	const int bytes = snprintf(buf, buf_size, " %s%s %s (?)",
+			index > 0 ? "AND " : "", field, op_to_str(filter->op));
+	if (bytes < 0 || bytes >= buf_size)
+		return -EINVAL;
+	part->str = strdup(buf);
+	if (part->str == NULL)
+		return -ENOMEM;
+	part->options |= STATEMENT_OPTION_FREE;
+	return 0;
+}
+
 int libowl_read(struct libowl* owl, int flags, const struct libowl_filter* filters, size_t filter_size, struct libowl_sensor_data* data, size_t size)
 {
 	(void) flags;
 	if (owl == NULL || filters == NULL || filter_size == 0 || data == NULL || size == 0 || size > INT_MAX)
 		return -EINVAL;
-	char *sql = NULL;
-	sql = append_str(&sql,
-			"SELECT "
-				"A.id,"
-				"(SELECT name from category_type WHERE id = S.type_id),"
-				"S.name,"
-				"A.value,"
-				"A.epoch"
-			" FROM data as A"
-			" INNER JOIN sensors AS S on S.id = A.sensor_id"
-			" WHERE");
 
-	if (sql == NULL)
-		return -ENOMEM;
-
-	int pos = 0;
-
-	for (size_t i = 0; i < filter_size; ++i) {
-		const int buf_size = 64;
-		char buf[buf_size];
-		char *field = NULL;
-		switch (filters[i].type) {
-		case LIBOWL_FILTER_INDEX:
-			field = "A.id";
-			break;
-		case LIBOWL_FILTER_EPOCH:
-			field = "A.epoch";
-			break;
-		case LIBOWL_FILTER_NAME:
-			field = "S.name";
-			break;
-		}
-		if (field == NULL) {
-			free(sql);
-			return -EINVAL;
-		}
-
-		const int bytes = snprintf(buf, buf_size, " %s%s %s (?)",
-				i > 0 ? "AND " : "", field, op_to_str(filters[i].op));
-		if (bytes < 0) {
-			free(sql);
-			return -errno;
-		}
-		if (bytes >= buf_size) {
-			free(sql);
-			return -ENOMEM;
-		}
-		sql = append_str(&sql, buf);
-		if (sql == NULL)
-			return -ENOMEM;
-	}
-
-	const int is_descending = (flags & LIBOWL_READ_DESCENDING) == LIBOWL_READ_DESCENDING;
-	sql = append_str(&sql, is_descending ? " ORDER BY A.id DESC" : " ORDER BY A.id ASC");
-	if (sql == NULL)
-		return -ENOMEM;
-	sql = append_str(&sql, " LIMIT (?)");
-	if (sql == NULL)
-		return -ENOMEM;
-
+	struct libowl_statement_part *parts = NULL;
+	struct libowl_bind *bind = NULL;
 	sqlite3_stmt *stmt = NULL;
+	char *sql = NULL;
+	size_t pos = 0;
 	int r = 0;
 
-	/* allocate a bind for each filter + the limit */
+	/* Allocate space for all required statement sections which will later be joined.
+	 * base + filters + order + limit */
+	const size_t part_size = 1 + filter_size + 1 + 1;
+	parts = calloc(part_size ,sizeof(struct libowl_statement_part));
+	if (parts == NULL) {
+		r = -ENOMEM;
+		goto exit;
+	}
+
+	/* Allocate space for all binding instructions to statement
+	 * filters + limit */
 	const size_t bind_size = filter_size + 1;
-	struct libowl_bind *bind = malloc(sizeof(struct libowl_bind) * bind_size);
+	bind = malloc(sizeof(struct libowl_bind) * bind_size);
 	if (bind == NULL) {
 		r = -ENOMEM;
 		goto exit;
 	}
-	int column = 1;
-	/* Bind all filters */
+
+	/* Base */
+	parts[0].str =
+		"SELECT "
+			"A.id,"
+			"(SELECT name from category_type WHERE id = S.type_id),"
+			"S.name,"
+			"A.value,"
+			"A.epoch"
+		" FROM data as A"
+		" INNER JOIN sensors AS S on S.id = A.sensor_id"
+		" WHERE";
+
+	int bind_column = 1;
+	/* filters  */
 	for (size_t i = 0; i < filter_size; ++i) {
-		bind[i].col = column++;
-		switch (filters[i].type) {
-		case LIBOWL_FILTER_INDEX:
-			bind[i].type = BIND_INT64;
-			bind[i].data.i64 = filters[i].data.mi64;
-			break;
-		case LIBOWL_FILTER_EPOCH:
-			bind[i].type = BIND_DOUBLE;
-			bind[i].data.dbl = filters[i].data.mdouble;
-			break;
-		case LIBOWL_FILTER_NAME:
-			bind[i].type = BIND_TEXT;
-			bind[i].data.str = filters[i].data.str;
-			break;
-		default:
-			pr_err(owl, "unsupported filter type: %d\n", filters[i].type);
-			r = -EINVAL;
+		r = filter_to_statement_and_bind(&filters[i], i, bind_column++, &parts[i + 1], &bind[i]);
+		if (r != 0) {
+			pr_err(owl, "invalid filter type: %d\n", filters[i].type);
 			goto exit;
 		}
 	}
 
-	/* Add limit as last variable to bind */
-	bind[bind_size - 1].col = column++;
+	/* Add order */
+	const int is_descending = (flags & LIBOWL_READ_DESCENDING) == LIBOWL_READ_DESCENDING;
+	parts[part_size - 2].str = is_descending ? " ORDER BY A.id DESC" : " ORDER BY A.id ASC";
+
+	/* Add limit */
+	parts[part_size - 1].str = " LIMIT (?)";
+	bind[bind_size - 1].col = bind_column++;
 	bind[bind_size - 1].type = BIND_INT;
 	bind[bind_size - 1].data.integer = (int) size;
 
-	/* build statement and bind variables */
+	/* Assemble statement */
+	sql = join_statement(parts, part_size);
+	if (sql == NULL) {
+		r = -ENOMEM;
+		goto exit;
+	}
+
+	/* compile statement and bind variables */
 	stmt = libowl_stmt_bind(owl, sql, bind, bind_size);
 	if (stmt == NULL) {
 		r = -EBADF;
@@ -779,6 +809,13 @@ int libowl_read(struct libowl* owl, int flags, const struct libowl_filter* filte
 	r = pos;
 
 exit:
+	if (parts != NULL) {
+		for (size_t i = 0; i < part_size; ++i) {
+			if ((parts[i].options & STATEMENT_OPTION_FREE) == STATEMENT_OPTION_FREE)
+				free((char*)parts[i].str);
+		}
+		free(parts);
+	}
 	if (bind != NULL)
 		free(bind);
 	if (sql != NULL)
@@ -786,7 +823,7 @@ exit:
 	if (stmt != NULL)
 		sqlite3_finalize(stmt);
 	if (r < 0) {
-		for (int i = 0; i < pos; ++i)
+		for (size_t i = 0; i < pos; ++i)
 			libowl_sensor_data_free(&data[i]);
 	}
 	return r;
