@@ -21,7 +21,8 @@ class LibOwlSensorData(Structure):
 class LibOwlFilterData(Union):
     _fields_ = [
         ('mdouble', c_double),
-        ('mi64', c_int64)]
+        ('mi64', c_int64),
+        ('str', c_char_p)]
 
 class LibOwlFilter(Structure):
     _fields_ = [
@@ -50,29 +51,31 @@ class LibOwl:
     def read(self, limit, after=None, before=None):
         # create filters
         filters = []
-        if after:
+        if after != None:
             filters.append((self.lib.libowl_filter_epoch, c_int(LIBOWL_OP_GREATER_THAN), c_double(after)))
-        if before:
+        if before != None:
             filters.append((self.lib.libowl_filter_epoch, c_int(LIBOWL_OP_LESS_THAN), c_double(before)))
         c_filter_array_type = LibOwlFilter * len(filters)
         c_filter_array = c_filter_array_type()
-        for index, filter in enumerate(filters):
-            ret = filter[0](byref(c_filter_array[index]), filter[1], filter[2])
+        for index, (func, op, value) in enumerate(filters):
+            ret = func(byref(c_filter_array[index]), op, value)
             if (ret != 0):
                 raise OSError(ret, os.strerror(ret), 'Failed creating filter')
         # create data array
         c_data_array_type = LibOwlSensorData * limit
         c_data_array = c_data_array_type()
-        c_size = c_size_t(limit)
         # work
         out = []
+        processed_data = 0
         try:
-            ret = self.lib.libowl_read(self.owl, byref(c_filter_array), c_size_t(len(c_filter_array)),
-                                                byref(c_data_array), byref(c_size))
-            if ret != 0:
+            ret = self.lib.libowl_read(self.owl, c_int(0), byref(c_filter_array), c_size_t(len(c_filter_array)),
+                                                byref(c_data_array), c_size_t(len(c_data_array)))
+            if ret < 0:
                 raise OSError(ret, os.strerror(ret), 'Failed reading db')
+            if ret > 0:
+                processed_data = ret
         finally:
-            for data in c_data_array[:c_size.value]:
+            for data in c_data_array[:processed_data]:
                 type = 'UNKNOWN'
                 if data.type == SENSOR_TEMPERATURE:
                     type = 'TEMP'
@@ -90,14 +93,14 @@ def main():
 
     next_epoch = 0.0
     while True:
-        data = db.read(50, next_epoch)
+        data = db.read(50, after=next_epoch)
         for name, epoch, type, value in data:
             next_epoch = epoch
             datestr = datetime.fromtimestamp(epoch, timezone.utc)
             print('[{}] ({}) {}: {}'.format(datestr, type, name, value))
 
         if not data:
-            time.sleep(1)
+            time.sleep(0.1)
 
     sys.exit(1)
 
