@@ -82,6 +82,11 @@ static const cyaml_schema_value_t config_schema = {
 	CYAML_VALUE_MAPPING(CYAML_FLAG_POINTER, struct config, config_fields),
 };
 
+struct owl_device {
+	void (*free)(void*);
+	void* priv;
+};
+
 struct owl_iio_device {
 	struct iio_device *dev;
 	struct iio_channel *chan;
@@ -106,15 +111,55 @@ static int iio_read(int* value, void* priv)
 	return 0;
 }
 
+static void owl_iio_free(void* priv)
+{
+	struct owl_iio_device *data = (struct owl_iio_device*) priv;
+	if (data->chan != NULL)
+		iio_channel_disable(data->chan);
+	free(data);
+}
+
 static const struct libowl_sensor_ops iio_sensor_ops = {
 	.read = iio_read,
 };
+
+static int create_owl_iio_device(struct libowl* owl, struct iio_context* ctx, struct sensor_config* scfg, struct owl_device* dev)
+{
+	if (scfg->channel == NULL) {
+		fprintf(stderr, "iio device \"%s\" missing mandatory \"channel\"\n", scfg->device);
+		return -EINVAL;
+	}
+	if (scfg->attribute == NULL) {
+		fprintf(stderr, "iio device \"%s\" missing mandatory \"attribute\"\n", scfg->device);
+		return -EINVAL;
+	}
+
+	dev->free = owl_iio_free;
+	dev->priv = calloc(1, sizeof(struct owl_iio_device));
+	if (dev->priv == NULL)
+		return -ENOMEM;
+	struct owl_iio_device *data = (struct owl_iio_device*) dev->priv;
+
+	data->dev = iio_context_find_device(ctx, scfg->device);
+	if (data->dev == NULL) {
+		fprintf(stderr, "iio device %s not found\n", scfg->device);
+		return -ENOENT;
+	}
+	data->chan = iio_device_find_channel(data->dev, scfg->channel, 0);
+	if (data->chan == NULL) {
+		fprintf(stderr, "iio device %s channel %s not found\n", scfg->device, scfg->channel);
+		return -ENOENT;
+	}
+	data->attr = (char*) scfg->attribute;
+
+	return libowl_add_sensor(owl, scfg->type, scfg->name, 0, &iio_sensor_ops, 1000, dev->priv);
+}
 
 struct owl_file_device {
 	char *path;
 };
 
-static int file_read(int* value, void* priv)
+static int owl_file_read(int* value, void* priv)
 {
 	struct owl_file_device *data = (struct owl_file_device*) priv;
 
@@ -154,9 +199,26 @@ static int file_read(int* value, void* priv)
 	return 0;
 }
 
+static void owl_file_free(void* priv)
+{
+	struct owl_file_device *data = (struct owl_file_device*) priv;
+	free(data);
+}
+
 static const struct libowl_sensor_ops file_sensor_ops = {
-	.read = file_read,
+	.read = owl_file_read,
 };
+
+static int create_owl_file_device(struct libowl* owl, struct sensor_config* scfg, struct owl_device* dev)
+{
+	dev->free = owl_file_free;
+	dev->priv = calloc(1, sizeof(struct owl_file_device));
+	if (dev->priv == NULL)
+		return -ENOMEM;
+	struct owl_file_device *data = (struct owl_file_device*) dev->priv;
+	data->path = (char*) scfg->device;
+	return libowl_add_sensor(owl, scfg->type, scfg->name, 0, &file_sensor_ops, 1000, dev->priv);
+}
 
 //NOLINTNEXTLINE(readability-function-cognitive-complexity)
 int main (int argc, char **argv)
@@ -203,10 +265,8 @@ int main (int argc, char **argv)
 	struct libowl *owl = NULL;
 	struct iio_context *ctx = NULL;
 	struct config *config = NULL;
-	struct owl_iio_device *iio_devices = NULL;
-	size_t iio_devices_count = 0;
-	struct owl_file_device *file_devices = NULL;
-	size_t file_devices_count = 0;
+	struct owl_device *devices = NULL;
+	size_t devices_count = 0;
 
 	/* Install signal handler */
 	struct pollfd fds;
@@ -256,66 +316,30 @@ int main (int argc, char **argv)
 		printf("SENSOR: %s type: %d method: %d device: %s channel: %s attribute: %s\n",
 			config->sensors[i].name, config->sensors[i].type, config->sensors[i].method,
 			config->sensors[i].device, config->sensors[i].channel, config->sensors[i].attribute);
+		/* allocate memory for device */
+		struct owl_device *ptr = realloc(devices, sizeof(*devices) * (devices_count + 1));
+		if (ptr == NULL) {
+			r = ENOMEM;
+			goto exit;
+		}
+		devices = ptr;
+		devices_count++;
+
 		switch (config->sensors[i].method) {
 			case OWLD_IIO:
 			{
-				if (config->sensors[i].channel == NULL) {
-					fprintf(stderr, "iio device \"%s\" missing mandatory \"channel\"\n", config->sensors[i].device);
-					r = EINVAL;
-					goto exit;
-				}
-				if (config->sensors[i].attribute == NULL) {
-					fprintf(stderr, "iio device \"%s\" missing mandatory \"attribute\"\n", config->sensors[i].device);
-					r = EINVAL;
-					goto exit;
-				}
-				struct owl_iio_device *ptr = realloc(iio_devices, sizeof(*iio_devices) * (iio_devices_count + 1));
-				if (ptr == NULL) {
-					r = ENOMEM;
-					goto exit;
-				}
-				iio_devices = ptr;
-				iio_devices_count++;
-				iio_devices[iio_devices_count - 1].dev = iio_context_find_device(ctx, config->sensors[i].device);
-				if (iio_devices[iio_devices_count - 1].dev == NULL) {
-					fprintf(stderr, "iio device %s not found\n", config->sensors[i].device);
-					r = ENOENT;
-					goto exit;
-				}
-
-				iio_devices[iio_devices_count - 1].chan = iio_device_find_channel(
-						iio_devices[iio_devices_count - 1].dev, config->sensors[i].channel, 0);
-				if (iio_devices[iio_devices_count - 1].chan == NULL) {
-					fprintf(stderr, "iio device %s channel %s not found\n", config->sensors[i].device, config->sensors[i].channel);
-					r = ENOENT;
-					goto exit;
-				}
-				iio_devices[iio_devices_count - 1].attr = (char*) config->sensors[i].attribute;
-
-				r = libowl_add_sensor(owl, config->sensors[i].type, config->sensors[i].name, 0, &iio_sensor_ops, 1000, &iio_devices[iio_devices_count - 1]);
+				r = create_owl_iio_device(owl, ctx, &config->sensors[i], &devices[devices_count - 1]);
 				if (r != 0) {
-					fprintf(stderr, "sensor %s failed adding to libowl [%d]: %s\n", config->sensors[i].name, -r, strerror(-r));
-					r = -r;
+					fprintf(stderr, "sensor iio %s failed adding to libowl [%d]: %s\n", config->sensors[i].name, -r, strerror(-r));
 					goto exit;
 				}
-
 				break;
 			}
 			case OWLD_FILE:
 			{
-				struct owl_file_device *ptr = realloc(file_devices, sizeof(*file_devices) * (file_devices_count + 1));
-				if (ptr == NULL) {
-					r = ENOMEM;
-					goto exit;
-				}
-				file_devices = ptr;
-				file_devices[file_devices_count].path = (char*) config->sensors[i].device;
-				file_devices_count++;
-
-				r = libowl_add_sensor(owl, config->sensors[i].type, config->sensors[i].name, 0, &file_sensor_ops, 1000, &file_devices[file_devices_count - 1]);
+				r = create_owl_file_device(owl, &config->sensors[i], &devices[devices_count - 1]);
 				if (r != 0) {
-					fprintf(stderr, "sensor %s failed adding to libowl [%d]: %s\n", config->sensors[i].name, -r, strerror(-r));
-					r = -r;
+					fprintf(stderr, "sensor file %s failed adding to libowl [%d]: %s\n", config->sensors[i].name, -r, strerror(-r));
 					goto exit;
 				}
 				break;
@@ -393,14 +417,12 @@ exit:
 	cyaml_free(&parser_conf, &config_schema, config, 0);
 	if (ctx)
 		iio_context_destroy(ctx);
-	if (file_devices != NULL)
-		free(file_devices);
-	if (iio_devices != NULL) {
-		for (size_t i = 0; i < iio_devices_count; ++i) {
-			if (iio_devices[i].chan != NULL)
-				iio_channel_disable(iio_devices[i].chan);
+	if (devices != NULL) {
+		for (size_t i = 0; i < devices_count; ++i) {
+			if (devices[i].free != NULL && devices[i].priv != NULL)
+				devices[i].free(devices[i].priv);
 		}
-		free(iio_devices);
+		free(devices);
 	}
 	if (owl != NULL)
 		libowl_close(owl);
