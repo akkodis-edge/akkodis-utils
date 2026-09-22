@@ -78,5 +78,5 @@ install: $(ALL_TARGETS_BIN_INSTALL)
 
 .PHONY: test
 test: $(BUILD)/test-libowl.o $(BUILD)/libowl.so
-	$(CXX) -o $(BUILD)/test-libowl $^ $(LDFLAGS) -lCatch2Main -lCatch2 -lowl
-	$(BUILD)/test-libowl
+	$(CXX) -o $(BUILD)/test-libowl $^ $(LDFLAGS) -L $(BUILD) -lCatch2Main -lCatch2 -lowl
+	LD_LIBRARY_PATH=$(BUILD) $(BUILD)/test-libowl

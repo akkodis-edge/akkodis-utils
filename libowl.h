@@ -45,12 +45,13 @@ struct libowl_sensor_ops {
 int libowl_add_sensor(struct libowl* owl, int type, const char* name, int flags, const struct libowl_sensor_ops* ops, int interval_ms, void* priv);
 
 /* Read next sensor(s) and update to database. Requires libowl opened with LIBOWL_OPEN_WRITE.
- * Behaviour modified by timeout_ms:
- *     0: non-blocking
- *   < 0: blocking
- *   > 0: timeout
  * Returns 0 on no change, postive value for number of sensors updated or negative errno for errors. */
-int libowl_next(struct libowl* owl, int timeout_ms);
+int libowl_update(struct libowl* owl);
+
+/* Returns positive time in milliseconds which can be delayed until next libowl_update() call.
+ * If no delay is possible then 0 is returned.
+ * Useful for avoiding busy loops. */
+int libowl_update_delay(const struct libowl* owl);
 
 /* Read from database into array
  * index is where to start reading from database

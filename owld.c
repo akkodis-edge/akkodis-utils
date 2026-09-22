@@ -332,7 +332,7 @@ int main (int argc, char **argv)
 
 	while (true) {
 		/* check for pending signals */
-		r = poll(&fds, 1, 0);
+		r = poll(&fds, 1, libowl_update_delay(owl));
 		if (r < 0) {
 			r = errno;
 			fprintf(stderr, "Failed polling [%d]: %s\n", r, strerror(r));
@@ -346,7 +346,7 @@ int main (int argc, char **argv)
 		}
 
 		/* update sensors */
-		const int update_count = libowl_next(owl, 0);
+		const int update_count = libowl_update(owl);
 		if (update_count < 0) {
 			fprintf(stderr, "failed polling sensors [%d]: %s\n", -update_count, strerror(-update_count));
 			r = -update_count;

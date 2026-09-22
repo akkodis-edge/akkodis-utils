@@ -28,20 +28,35 @@ struct libowl {
 	void *monotonic_priv;
 };
 
-/* Return 0 for duration not elapsed, 1 for duration elapsed or negative errno for error */
-static int libowl_duration_elapsed(const struct timespec* time_now, const struct timespec* start, const struct timespec* duration)
+static void timespec_add(struct timespec* result, const struct timespec* lhs, const struct timespec* rhs)
 {
-	struct timespec elapsed = {
-			.tv_sec = time_now->tv_sec - start->tv_sec,
-			.tv_nsec = time_now->tv_nsec - start->tv_nsec};
-	if (elapsed.tv_nsec < 0) {
-		elapsed.tv_sec--;
-		elapsed.tv_nsec += 1000000000L;
+	result->tv_sec = lhs->tv_sec + rhs->tv_sec;
+	result->tv_nsec = lhs->tv_nsec + rhs->tv_nsec;
+	while(result->tv_nsec >= 1000000000L) {
+		result->tv_nsec -= 1000000000L;
+		result->tv_sec++;
 	}
-	if (elapsed.tv_sec == duration->tv_sec)
-		return elapsed.tv_nsec > duration->tv_nsec;
-	else
-		return elapsed.tv_sec > duration->tv_sec;
+}
+
+static void timespec_substract(struct timespec* result, const struct timespec* lhs, const struct timespec* rhs)
+{
+	result->tv_sec = lhs->tv_sec - rhs->tv_sec;
+	result->tv_nsec = lhs->tv_nsec - rhs->tv_nsec;
+	while (result->tv_nsec < 0) {
+		result->tv_nsec += 1000000000L;
+		result->tv_sec--;
+	}
+}
+
+/* return -1 if lhs < rhs, 0 if lhs == rhs and 1 if lhs > rhs*/
+static int timespec_cmp(const struct timespec* lhs, const struct timespec* rhs)
+{
+	if (lhs->tv_sec == rhs->tv_sec && lhs->tv_nsec == rhs->tv_nsec)
+		return 0;
+	if (lhs->tv_sec > rhs->tv_sec
+		|| (lhs->tv_sec == rhs->tv_sec && lhs->tv_nsec > rhs->tv_nsec))
+		return 1;
+	return -1;
 }
 
 static int libowl_monotonic(struct timespec* time, void* priv)
@@ -421,55 +436,74 @@ exit:
 	return r;
 }
 
-int libowl_next(struct libowl* owl, int timeout_ms)
+int libowl_update(struct libowl* owl)
 {
 	if (owl == NULL || !is_write(owl))
 		return -EINVAL;
 
-	struct timespec timeout;
-	memset(&timeout, 0, sizeof(timeout));
-	if (timeout_ms > 0)
-		timespec_from_ms(&timeout, timeout_ms);
-	struct timespec start;
-	int r = owl->monotonic(&start, owl->monotonic_priv);
-	if (r != 0) {
-		if (is_debug(owl))
-			printf("libowl: error: owl->monotonic() [%d]: %s\n", r, strerror(r));
+	int sensors_updated = 0;
+	struct timespec time_now;
+	int r = owl->monotonic(&time_now, owl->monotonic_priv);
+	if (r != 0)
 		return r;
-	}
 
-	while (1) {
-		int read_sensors = 0;
-		struct timespec time_now;
-		r = owl->monotonic(&time_now, owl->monotonic_priv);
+	for (size_t i = 0; i < owl->sensors_size; ++i) {
+		/* calculate next update time of sensor */
+		struct timespec next_update;
+		timespec_add(&next_update, &owl->sensors[i].interval, &owl->sensors[i].last_poll);
+		/* check if next update is in the future */
+		if (timespec_cmp(&next_update, &time_now) > 0)
+			continue;
+		/* read sensor */
+		int value = 0;
+		r = owl->sensors[i].ops.read(&value, owl->sensors[i].priv);
+		if (r != 0) {
+			if (is_debug(owl))
+				printf("libowl: error: sensor->read [%d]: %s\n", r, strerror(r));
+			return r;
+		}
+		memcpy(&owl->sensors[i].last_poll, &time_now, sizeof(owl->sensors[i].last_poll));
+		r = libowl_sensor_push(owl, &owl->sensors[i], value);
 		if (r != 0)
 			return r;
-
-		for (size_t i = 0; i < owl->sensors_size; ++i) {
-			if (libowl_duration_elapsed(&time_now, &owl->sensors[i].last_poll, &owl->sensors[i].interval) > 0) {
-				int value = 0;
-				r = owl->sensors[i].ops.read(&value, owl->sensors[i].priv);
-				if (r != 0) {
-					if (is_debug(owl))
-						printf("libowl: error: sensor->read [%d]: %s\n", r, strerror(r));
-					return r;
-				}
-				memcpy(&owl->sensors[i].last_poll, &time_now, sizeof(owl->sensors[i].last_poll));
-				r = libowl_sensor_push(owl, &owl->sensors[i], value);
-				if (r != 0)
-					return r;
-				read_sensors++;
-			}
-		}
-
-		if (timeout_ms == 0) /* non-blocking */
-			return read_sensors;
-		if (timeout_ms < 0 && read_sensors > 0) /* blocking */
-			return read_sensors;
-		if (timeout_ms > 0 && libowl_duration_elapsed(&time_now, &start, &timeout) > 0)
-			return read_sensors;
+		sensors_updated++;
 	}
-	return 0;
+	return sensors_updated;
+}
+
+int libowl_update_delay(const struct libowl* owl)
+{
+	if (owl == NULL || !is_write(owl))
+		return 0;
+
+	struct timespec time_now;
+	int r = owl->monotonic(&time_now, owl->monotonic_priv);
+	if (r != 0)
+		return 0;
+
+	struct timespec shortest = { .tv_sec = INT_MAX / 1000, .tv_nsec = 0};
+	for (size_t i = 0; i < owl->sensors_size; ++i) {
+		/* calculate timestamp for next update of sensor */
+		struct timespec next_update;
+		timespec_add(&next_update, &owl->sensors[i].interval, &owl->sensors[i].last_poll);
+		/* check if next update is now */
+		if (timespec_cmp(&next_update, &time_now) < 1)
+			continue;
+		/* Check if next update is shorter than previous shortest */
+		struct timespec remaining;
+		timespec_substract(&remaining, &next_update, &time_now);
+		if (timespec_cmp(&remaining, &shortest) < 0)
+			memcpy(&shortest, &remaining, sizeof(shortest));
+	}
+
+	/* timespec to milliseconds, check for overflow */
+	if (shortest.tv_sec > (INT_MAX / 1000))
+		return INT_MAX;
+	int milliseconds = shortest.tv_sec * 1000;
+	const int nano_to_milli = shortest.tv_nsec / 1000000;
+	if ((INT_MAX - milliseconds) < nano_to_milli)
+		return INT_MAX;
+	return milliseconds + nano_to_milli;
 }
 
 int libowl_sensor_data_free(struct libowl_sensor_data* data)
