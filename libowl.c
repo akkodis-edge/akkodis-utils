@@ -69,11 +69,6 @@ static int libowl_monotonic(struct timespec* time, void* priv)
 	return 0;
 }
 
-static int is_debug(const struct libowl* owl)
-{
-	return (owl->flags & LIBOWL_LOGLEVEL_DEBUG) == LIBOWL_LOGLEVEL_DEBUG;
-}
-
 static int is_write(const struct libowl* owl)
 {
 	return (owl->flags & LIBOWL_OPEN_WRITE) == LIBOWL_OPEN_WRITE;
@@ -96,21 +91,31 @@ static int libowl_sensor_type_int(const char* str)
 	return INT_MAX;
 }
 
+static void mprint(FILE* stream, const char* fmt, ...)
+{
+	va_list args;
+	va_start(args, fmt);
+	vfprintf(stream, fmt, args);
+	va_end(args);
+}
+
+#define pr_err(owl, fmt, ...) \
+	if ((owl->flags & LIBOWL_LOGLEVEL_DEBUG) == LIBOWL_LOGLEVEL_DEBUG) \
+		{mprint(stderr, "libowl: error: " fmt, ##__VA_ARGS__);}
+
 static int libowl_create_table(struct libowl* owl, const char* statement)
 {
 	sqlite3_stmt *stmt = NULL;
 	int r = sqlite3_prepare_v2(owl->db, statement, -1, &stmt, NULL);
 	if (r != SQLITE_OK) {
-		if (is_debug(owl))
-			printf("libowl: error: sqlite3_prepare_v2(create_table) [%d]: %s\n", r, sqlite3_errstr(r));
+		pr_err(owl, "sqlite3_prepare_v2(create_table) [%d]: %s\n", r, sqlite3_errstr(r));
 		r = -EBADF;
 		goto exit;
 	}
 
 	r = sqlite3_step(stmt);
 	if (r != SQLITE_DONE) {
-		if (is_debug(owl))
-			printf("libowl: error: sqlite3_step(create_table) [%d]: %s\n", r, sqlite3_errstr(r));
+		pr_err(owl, "sqlite3_step(create_table) [%d]: %s\n", r, sqlite3_errstr(r));
 		r = -EBADF;
 		goto exit;
 	}
@@ -129,8 +134,7 @@ static int libowl_populate_category(struct libowl* owl)
 		"INSERT OR IGNORE INTO category_type(name) VALUES (?)",
 		-1, &stmt, NULL);
 	if (r != SQLITE_OK) {
-		if (is_debug(owl))
-			printf("libowl: error: sqlite3_prepare_v2(insert_category) [%d]: %s\n", r, sqlite3_errstr(r));
+		pr_err(owl, "sqlite3_prepare_v2(insert_category) [%d]: %s\n", r, sqlite3_errstr(r));
 		r = -EBADF;
 		goto exit;
 	}
@@ -138,15 +142,13 @@ static int libowl_populate_category(struct libowl* owl)
 	for (int i = 0; i <= LIBOWL_SENSOR_TEMP; ++i) {
 		r = sqlite3_bind_text(stmt, 1, libowl_sensor_type_str(LIBOWL_SENSOR_TEMP), -1, SQLITE_STATIC);
 		if (r != SQLITE_OK) {
-			if (is_debug(owl))
-				printf("libowl: error: sqlite3_bind_text(category) [%d]: %s\n", r, sqlite3_errstr(r));
+			pr_err(owl, "sqlite3_bind_text(category) [%d]: %s\n", r, sqlite3_errstr(r));
 			r = -EBADF;
 			goto exit;
 		}
 		r = sqlite3_step(stmt);
 		if (r != SQLITE_DONE) {
-			if (is_debug(owl))
-				printf("libowl: error: sqlite3_step(category) [%d]: %s\n", r, sqlite3_errstr(r));
+			pr_err(owl, "sqlite3_step(category) [%d]: %s\n", r, sqlite3_errstr(r));
 			r = -EBADF;
 			goto exit;
 		}
@@ -167,8 +169,7 @@ static int libowl_pragma(struct libowl* owl)
 		" PRAGMA foreign_keys = ON;",
 		-1, &stmt, NULL);
 	if (r != SQLITE_OK) {
-		if (is_debug(owl))
-			printf("libowl: error: sqlite3_prepare_v2(pragma) [%d]: %s\n", r, sqlite3_errstr(r));
+		pr_err(owl, "sqlite3_prepare_v2(pragma) [%d]: %s\n", r, sqlite3_errstr(r));
 		r = -EBADF;
 		goto exit;
 	}
@@ -179,8 +180,7 @@ static int libowl_pragma(struct libowl* owl)
 			break;
 		if (r == SQLITE_ROW)
 			continue;
-		if (is_debug(owl))
-			printf("libowl: error: sqlite3_step(pragma) [%d]: %s\n", r, sqlite3_errstr(r));
+		pr_err(owl, "sqlite3_step(pragma) [%d]: %s\n", r, sqlite3_errstr(r));
 		r = -EBADF;
 		goto exit;
 	}
@@ -256,8 +256,7 @@ int libowl_open(struct libowl** owl, const char* path, int flags)
 
 	int r = sqlite3_open_v2(path, &newowl->db, sqlite3_flags, NULL);
 	if (r != SQLITE_OK) {
-		if (is_debug(newowl))
-			printf("libowl: error: sqlite3_open_v2() [%d]: %s\n", r, sqlite3_errstr(r));
+		pr_err(newowl, "sqlite3_open_v2() [%d]: %s\n", r, sqlite3_errstr(r));
 		r = -EBADF;
 		goto exit;
 	}
@@ -339,8 +338,7 @@ int libowl_add_sensor(struct libowl* owl, int type, const char* name, int flags,
 	timespec_from_ms(&sensor->interval, interval_ms);
 	int r = owl->monotonic(&sensor->last_poll, owl->monotonic_priv);
 	if (r != 0) {
-		if (is_debug(owl))
-			printf("libowl: error: owl->monotonic() [%d]: %s\n", r, strerror(r));
+		pr_err(owl, "owl->monotonic() [%d]: %s\n", r, strerror(r));
 		goto exit;
 	}
 	memcpy(&sensor->ops, ops, sizeof(sensor->ops));
@@ -352,30 +350,26 @@ int libowl_add_sensor(struct libowl* owl, int type, const char* name, int flags,
 			"(?, (SELECT id from category_type WHERE name=(?)))",
 		-1, &stmt, NULL);
 	if (r != SQLITE_OK) {
-		if (is_debug(owl))
-			printf("libowl: error: sqlite3_prepare_v2(insert_sensor) [%d]: %s\n", r, sqlite3_errstr(r));
+		pr_err(owl, "sqlite3_prepare_v2(insert_sensor) [%d]: %s\n", r, sqlite3_errstr(r));
 		r = -EBADF;
 		goto exit;
 	}
 
 	r = sqlite3_bind_text(stmt, 1, sensor->name, -1, SQLITE_STATIC);
 	if (r != SQLITE_OK) {
-		if (is_debug(owl))
-			printf("libowl: error: sqlite3_bind_text(insert_sensor) [%d]: %s\n", r, sqlite3_errstr(r));
+		pr_err(owl, "sqlite3_bind_text(insert_sensor) [%d]: %s\n", r, sqlite3_errstr(r));
 		r = -EBADF;
 		goto exit;
 	}
 	r = sqlite3_bind_text(stmt, 2, libowl_sensor_type_str(sensor->type), -1, SQLITE_STATIC);
 	if (r != SQLITE_OK) {
-		if (is_debug(owl))
-			printf("libowl: error: sqlite3_bind_text(insert_sensor) [%d]: %s\n", r, sqlite3_errstr(r));
+		pr_err(owl, "sqlite3_bind_text(insert_sensor) [%d]: %s\n", r, sqlite3_errstr(r));
 		r = -EBADF;
 		goto exit;
 	}
 	r = sqlite3_step(stmt);
 	if (r != SQLITE_DONE) {
-		if (is_debug(owl))
-			printf("libowl: error: sqlite3_step(insert_sensor) [%d]: %s\n", r, sqlite3_errstr(r));
+		pr_err(owl, "sqlite3_step(insert_sensor) [%d]: %s\n", r, sqlite3_errstr(r));
 		r = -EBADF;
 		goto exit;
 	}
@@ -430,8 +424,7 @@ static int libowl_sensor_push(struct libowl* owl, struct libowl_sensor* sensor, 
 	sqlite3_stmt *stmt = NULL;
 	int r = sqlite3_prepare_v2(owl->db, sql, -1, &stmt, NULL);
 	if (r != SQLITE_OK) {
-		if (is_debug(owl))
-			printf("libowl: error: sqlite3_prepare_v2(sensor_push) [%d]: %s\n", r, sqlite3_errstr(r));
+		pr_err(owl, "sqlite3_prepare_v2(sensor_push) [%d]: %s\n", r, sqlite3_errstr(r));
 		r = -EBADF;
 		goto exit;
 	}
@@ -445,16 +438,14 @@ static int libowl_sensor_push(struct libowl* owl, struct libowl_sensor* sensor, 
 	if (r == SQLITE_OK && use_monotonic)
 		r = sqlite3_bind_double(stmt, 4, time);
 	if (r != SQLITE_OK) {
-		if (is_debug(owl))
-			printf("libowl: error: sqlite3_bind(insert_sensor) [%d]: %s\n", r, sqlite3_errstr(r));
+		pr_err(owl, "sqlite3_bind(insert_sensor) [%d]: %s\n", r, sqlite3_errstr(r));
 		r = -EBADF;
 		goto exit;
 	}
 
 	r = sqlite3_step(stmt);
 	if (r != SQLITE_DONE) {
-		if (is_debug(owl))
-			printf("libowl: error: sqlite3_step(insert_sensor) [%d]: %s\n", r, sqlite3_errstr(r));
+		pr_err(owl, "sqlite3_step(insert_sensor) [%d]: %s\n", r, sqlite3_errstr(r));
 		r = -EBADF;
 		goto exit;
 	}
@@ -495,8 +486,7 @@ int libowl_update(struct libowl* owl)
 		int value = 0;
 		r = owl->sensors[i].ops.read(&value, owl->sensors[i].priv);
 		if (r != 0) {
-			if (is_debug(owl))
-				printf("libowl: error: sensor->read [%d]: %s\n", r, strerror(r));
+			pr_err(owl, "sensor->read [%d]: %s\n", r, strerror(r));
 			return r;
 		}
 		memcpy(&owl->sensors[i].last_poll, &time_now, sizeof(owl->sensors[i].last_poll));
@@ -670,8 +660,7 @@ int libowl_read(struct libowl* owl, int flags, const struct libowl_filter* filte
 	sqlite3_stmt *stmt = NULL;
 	int r = sqlite3_prepare_v2(owl->db, sql, -1, &stmt, NULL);
 	if (r != SQLITE_OK) {
-		if (is_debug(owl))
-			printf("libowl: error: sqlite3_prepare_v2(read) [%d]: %s\n", r, sqlite3_errstr(r));
+		pr_err(owl, "sqlite3_prepare_v2(read) [%d]: %s\n", r, sqlite3_errstr(r));
 		r = -EBADF;
 		goto exit;
 	}
@@ -696,8 +685,7 @@ int libowl_read(struct libowl* owl, int flags, const struct libowl_filter* filte
 			goto exit;
 		}
 		if (r != SQLITE_OK) {
-			if (is_debug(owl))
-				printf("libowl: error: sqlite3_bind(read) [%d]: %s\n", r, sqlite3_errstr(r));
+			pr_err(owl, "sqlite3_bind(read) [%d]: %s\n", r, sqlite3_errstr(r));
 			r = -EBADF;
 			goto exit;
 		}
@@ -706,8 +694,7 @@ int libowl_read(struct libowl* owl, int flags, const struct libowl_filter* filte
 
 	r = sqlite3_bind_int(stmt, column, (int) size);
 	if (r != SQLITE_OK) {
-		if (is_debug(owl))
-			printf("libowl: error: sqlite3_bind_int(read) [%d]: %s\n", r, sqlite3_errstr(r));
+		pr_err(owl, "sqlite3_bind_int(read) [%d]: %s\n", r, sqlite3_errstr(r));
 		r = -EBADF;
 		goto exit;
 	}
@@ -727,8 +714,7 @@ int libowl_read(struct libowl* owl, int flags, const struct libowl_filter* filte
 			pos++;
 			break;
 		default:
-			if (is_debug(owl))
-				printf("libowl: error: sqlite3_step(read) [%d]: %s\n", r, sqlite3_errstr(r));
+			pr_err(owl, "sqlite3_step(read) [%d]: %s\n", r, sqlite3_errstr(r));
 			r = -EBADF;
 			goto exit;
 		}
