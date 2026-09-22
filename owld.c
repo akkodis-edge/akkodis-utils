@@ -333,7 +333,6 @@ int main (int argc, char **argv)
 	while (true) {
 		/* check for pending signals */
 		const int delay = libowl_update_delay(owl);
-		printf("delay: %d\n", delay);
 		r = poll(&fds, 1, delay);
 		if (r < 0) {
 			r = errno;
@@ -354,11 +353,10 @@ int main (int argc, char **argv)
 			r = -update_count;
 			goto exit;
 		}
-		printf("update: %d\n", update_count);
 		/* Get values if any sensor updated */
 		if (update_count > 0) {
 			while (true) {
-				size_t sensor_data_size = 50;
+				const size_t sensor_data_size = 50;
 				struct libowl_sensor_data sensor_data[sensor_data_size];
 				struct libowl_filter index_filter;
 				if (libowl_filter_index(&index_filter, LIBOWL_OP_GREATER_EQUAL, index) != 0) {
@@ -367,17 +365,16 @@ int main (int argc, char **argv)
 					goto exit;
 				}
 
-				r = libowl_read(owl, 0, &index_filter, 1, sensor_data, &sensor_data_size);
-				if (r != 0) {
+				r = libowl_read(owl, 0, &index_filter, 1, sensor_data, sensor_data_size);
+				if (r < 0) {
 					fprintf(stderr, "failed reading sensors [%d]: %s\n", -update_count, strerror(-update_count));
 					r = -update_count;
 					goto exit;
 				}
-
-				if (sensor_data_size == 0)
+				if (r == 0)
 					break;
-
-				for (size_t i = 0; i < sensor_data_size; ++i) {
+				const int updated = r;
+				for (int i = 0; i < updated; ++i) {
 					char timestr[200];
 					const time_t epoch = (time_t) sensor_data[i].epoch; /* double to time_t, drop fractional seconds */
 					if (strftime(timestr, sizeof(timestr), "%Y-%m-%d %T", gmtime(&epoch)) < 1)

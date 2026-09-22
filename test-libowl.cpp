@@ -246,4 +246,33 @@ TEST_CASE("libowl_read") {
 		sensor_data_equal(&test.data[1], &expected[4]);
 		sensor_data_equal(&test.data[2], &expected[5]);
 	}
+
+	SECTION("Filter by name -- sensor1") {
+		struct test_data test;
+		auto cleanup = prepare_data(&test, database_size + 1);
+		struct libowl_filter filter;
+		REQUIRE(libowl_filter_name(&filter, LIBOWL_OP_EQUAL, "sensor1") == 0);
+		REQUIRE(libowl_read(owl, 0, &filter, 1, test.data, test.size) == 3);
+		sensor_data_equal(&test.data[0], &expected[0]);
+		sensor_data_equal(&test.data[1], &expected[3]);
+		sensor_data_equal(&test.data[2], &expected[6]);
+	}
+
+	SECTION("Filter by name -- find all sensors") {
+		struct test_data test;
+		auto cleanup = prepare_data(&test, database_size + 1);
+		struct libowl_filter filter;
+		REQUIRE(libowl_filter_name(&filter, LIBOWL_OP_GREATER_THAN, "") == 0);
+		REQUIRE(libowl_read(owl, 0, &filter, 1, &test.data[0], 1) == 1);
+		sensor_data_equal(&test.data[0], &expected[0]);
+		REQUIRE(libowl_filter_name(&filter, LIBOWL_OP_GREATER_THAN, test.data[0].name) == 0);
+		REQUIRE(libowl_read(owl, 0, &filter, 1, &test.data[1], 1) == 1);
+		sensor_data_equal(&test.data[1], &expected[1]);
+		REQUIRE(libowl_filter_name(&filter, LIBOWL_OP_GREATER_THAN, test.data[1].name) == 0);
+		REQUIRE(libowl_read(owl, 0, &filter, 1, &test.data[2], 1) == 1);
+		sensor_data_equal(&test.data[2], &expected[2]);
+		REQUIRE(libowl_filter_name(&filter, LIBOWL_OP_GREATER_THAN, test.data[2].name) == 0);
+		REQUIRE(libowl_read(owl, 0, &filter, 1, &test.data[3], 1) == 0);
+	}
+
 }

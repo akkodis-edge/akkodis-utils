@@ -574,6 +574,16 @@ int libowl_filter_epoch(struct libowl_filter* filter, int op, double epoch)
 	return 0;
 }
 
+int libowl_filter_name(struct libowl_filter* filter, int op, const char* name)
+{
+	if (op > LIBOWL_OP_EQUAL || name == NULL)
+		return -EINVAL;
+	filter->type = LIBOWL_FILTER_NAME;
+	filter->op = op;
+	filter->data.str = name;
+	return 0;
+}
+
 static const char* op_to_str(int op)
 {
 	switch (op) {
@@ -624,6 +634,9 @@ int libowl_read(struct libowl* owl, int flags, const struct libowl_filter* filte
 		case LIBOWL_FILTER_EPOCH:
 			field = "A.epoch";
 			break;
+		case LIBOWL_FILTER_NAME:
+			field = "S.name";
+			break;
 		}
 		if (field == NULL) {
 			free(sql);
@@ -673,6 +686,9 @@ int libowl_read(struct libowl* owl, int flags, const struct libowl_filter* filte
 			break;
 		case LIBOWL_FILTER_EPOCH:
 			r = sqlite3_bind_double(stmt, column, filters[i].data.mdouble);
+			break;
+		case LIBOWL_FILTER_NAME:
+			r = sqlite3_bind_text(stmt, 1, filters[i].data.str, -1, SQLITE_STATIC);
 			break;
 		}
 		if (r == SQLITE_NOTFOUND) {
