@@ -31,6 +31,11 @@ enum libowl_sensor_type {
 	LIBOWL_SENSOR_TEMP, /* Temperature in milli C */
 };
 const char* libowl_sensor_type_str(int type);
+struct libowl_sensor_ops {
+	/* Should return sensor reading in "value", "priv" is passed from libowl_add_sensor().
+	 * Return 0 for success or negative errno for error.*/
+	int (*read)(int* value, void* priv);
+};
 
 /* Add sensor to libowl. Requires libowl opened with LIBOWL_OPEN_WRITE.
  * "interval_ms" defines polling interval.
@@ -38,9 +43,6 @@ const char* libowl_sensor_type_str(int type);
  * Returns 0 on success or negative errno for errors. */
 enum libowl_sensor_flags {
 	LIBOWL_SENSOR_FREE_PRIV = 1 << 0, /* Free priv data on call to libowl_close() */
-};
-struct libowl_sensor_ops {
-	int (*read)(int* value, void* priv);
 };
 int libowl_add_sensor(struct libowl* owl, int type, const char* name, int flags, const struct libowl_sensor_ops* ops, int interval_ms, void* priv);
 
@@ -50,13 +52,11 @@ int libowl_update(struct libowl* owl);
 
 /* Returns positive time in milliseconds which can be delayed until next libowl_update() call.
  * If no delay is possible then 0 is returned.
+ * Calling this without LIBOWL_OPEN_WRITE will always return 0.
  * Useful for avoiding busy loops. */
 int libowl_update_delay(const struct libowl* owl);
 
-/* Read from database into array
- * index is where to start reading from database
- *
- */
+
 struct libowl_sensor_data {
 	char *name;
 	int64_t index;
@@ -84,10 +84,23 @@ struct libowl_filter {
 	} data;
 };
 
+/* Initialize libowl_filter using utility functions.
+ * Will return 0 for success or negative errno for error. */
 int libowl_filter_epoch(struct libowl_filter* filter, int op, double epoch);
 int libowl_filter_index(struct libowl_filter* filter, int op, int64_t index);
 
-int libowl_read(struct libowl* owl, const struct libowl_filter* filters, size_t filter_size, struct libowl_sensor_data* data, size_t* size);
+/* Read from libowl based on "filters" of "filter_size" into "data" of "size". Number of
+ * processed entries is returned in "size".
+ * Setting filters to NULL will use a default filter.
+ *
+ * Caller is responsible of freeing returned "data", see "libowl_sensor_data_free()".
+ *
+ * Returns 0 for success or negative errno for error.
+ */
+enum libowl_read_flags {
+	LIBOWL_READ_DESCENDING = 1 << 0, /* Default is ascending */
+};
+int libowl_read(struct libowl* owl, int flags, const struct libowl_filter* filters, size_t filter_size, struct libowl_sensor_data* data, size_t* size);
 int libowl_sensor_data_free(struct libowl_sensor_data* data);
 
 #ifdef __cplusplus

@@ -436,6 +436,14 @@ exit:
 	return r;
 }
 
+/* return 0 if not yet, 1 if now */
+static int sensor_next_update(struct timespec* next_update, const struct timespec* time_now,
+								const struct timespec* interval, const struct timespec* last_poll)
+{
+	timespec_add(next_update, interval, last_poll);
+	return timespec_cmp(next_update, time_now) <= 0;
+}
+
 int libowl_update(struct libowl* owl)
 {
 	if (owl == NULL || !is_write(owl))
@@ -448,11 +456,9 @@ int libowl_update(struct libowl* owl)
 		return r;
 
 	for (size_t i = 0; i < owl->sensors_size; ++i) {
-		/* calculate next update time of sensor */
+		/* Skip if sensor is not yet due for polling */
 		struct timespec next_update;
-		timespec_add(&next_update, &owl->sensors[i].interval, &owl->sensors[i].last_poll);
-		/* check if next update is in the future */
-		if (timespec_cmp(&next_update, &time_now) > 0)
+		if (sensor_next_update(&next_update, &time_now, &owl->sensors[i].interval, &owl->sensors[i].last_poll) == 0)
 			continue;
 		/* read sensor */
 		int value = 0;
@@ -473,7 +479,7 @@ int libowl_update(struct libowl* owl)
 
 int libowl_update_delay(const struct libowl* owl)
 {
-	if (owl == NULL || !is_write(owl))
+	if (owl == NULL || !is_write(owl) || owl->sensors_size == 0)
 		return 0;
 
 	struct timespec time_now;
@@ -485,10 +491,8 @@ int libowl_update_delay(const struct libowl* owl)
 	for (size_t i = 0; i < owl->sensors_size; ++i) {
 		/* calculate timestamp for next update of sensor */
 		struct timespec next_update;
-		timespec_add(&next_update, &owl->sensors[i].interval, &owl->sensors[i].last_poll);
-		/* check if next update is now */
-		if (timespec_cmp(&next_update, &time_now) < 1)
-			continue;
+		if (sensor_next_update(&next_update, &time_now, &owl->sensors[i].interval, &owl->sensors[i].last_poll) != 0)
+			return 0; /* early exit if due for polling */
 		/* Check if next update is shorter than previous shortest */
 		struct timespec remaining;
 		timespec_substract(&remaining, &next_update, &time_now);
@@ -500,7 +504,9 @@ int libowl_update_delay(const struct libowl* owl)
 	if (shortest.tv_sec > (INT_MAX / 1000))
 		return INT_MAX;
 	int milliseconds = shortest.tv_sec * 1000;
-	const int nano_to_milli = shortest.tv_nsec / 1000000;
+	/* round-up nano to closes milli */
+	const int nano_to_milli = (shortest.tv_nsec / 1000000)
+								+ (shortest.tv_nsec % 1000000 ? 1 : 0);
 	if ((INT_MAX - milliseconds) < nano_to_milli)
 		return INT_MAX;
 	return milliseconds + nano_to_milli;
@@ -570,8 +576,9 @@ static const char* op_to_str(int op)
 	return "XX";
 }
 
-int libowl_read(struct libowl* owl, const struct libowl_filter* filters, size_t filter_size, struct libowl_sensor_data* data, size_t* size)
+int libowl_read(struct libowl* owl, int flags, const struct libowl_filter* filters, size_t filter_size, struct libowl_sensor_data* data, size_t* size)
 {
+	(void) flags;
 	if (owl == NULL || data == NULL || *size == 0 || *size > INT64_MAX)
 		return -EINVAL;
 	char *sql = NULL;
@@ -588,6 +595,8 @@ int libowl_read(struct libowl* owl, const struct libowl_filter* filters, size_t 
 
 	if (sql == NULL)
 		return -ENOMEM;
+
+	size_t pos = 0;
 
 	struct libowl_filter default_filter;
 	/* use default filter if none are provided */
@@ -678,7 +687,7 @@ int libowl_read(struct libowl* owl, const struct libowl_filter* filters, size_t 
 		goto exit;
 	}
 
-	size_t pos = 0;
+
 	do {
 		r = sqlite3_step(stmt);
 		switch (r) {
@@ -708,5 +717,9 @@ exit:
 		free(sql);
 	if (stmt != NULL)
 		sqlite3_finalize(stmt);
+	if (r != 0) {
+		for (size_t i = 0; i < pos; ++i)
+			libowl_sensor_data_free(&data[i]);
+	}
 	return r;
 }
