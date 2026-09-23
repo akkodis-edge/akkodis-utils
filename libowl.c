@@ -409,7 +409,7 @@ exit:
 
 int libowl_add_sensor(struct libowl* owl, int type, const char* name, int flags, const struct libowl_sensor_ops* ops, int interval_ms, void* priv)
 {
-	if (owl == NULL || !is_write(owl) || libowl_sensor_type_str(type) == NULL || name == NULL || ops == NULL || interval_ms < 0)
+	if (owl == NULL || !is_write(owl) || libowl_sensor_type_str(type) == NULL || name == NULL || name[0] == '\0' || ops == NULL || interval_ms < 0)
 		return -EINVAL;
 
 	void *ptr = realloc(owl->sensors, sizeof(*owl->sensors) * (owl->sensors_size + 1));
