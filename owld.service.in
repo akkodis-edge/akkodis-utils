@@ -1,5 +1,6 @@
 [Unit]
 Description="owld sensor logger service"
+ConditionFileNotEmpty=@SYSCONFDIR@/owld.conf
 
 [Service]
 Type=exec
