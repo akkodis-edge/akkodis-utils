@@ -77,13 +77,20 @@ class LibOwl:
                 self.lib.libowl_sensor_data_free(byref(c_data_array[0]))
         return sensors
 
-    def read(self, limit, after=None, before=None):
+    def read(self, limit, after=None, before=None, name=None):
+        # limit: maximum numbero of readings
+        # after: return readings AFTER this epoch value
+        # before: return readings BEFORE this epoch value
+        # name: return readings for name
+
         # create filters
         filters = []
         if after != None:
             filters.append((self.lib.libowl_filter_epoch, c_int(LIBOWL_OP_GREATER_THAN), c_double(after)))
         if before != None:
             filters.append((self.lib.libowl_filter_epoch, c_int(LIBOWL_OP_LESS_THAN), c_double(before)))
+        if name != None:
+            filters.append((self.lib.libowl_filter_name, c_int(LIBOWL_OP_EQUAL), c_char_p(name.encode('utf-8'))))
         c_filter_array_type = LibOwlFilter * len(filters)
         c_filter_array = c_filter_array_type()
         for index, (func, op, value) in enumerate(filters):
