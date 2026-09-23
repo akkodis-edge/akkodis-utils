@@ -272,6 +272,14 @@ int libowl_open(struct libowl** owl, const char* path, int flags)
 			goto exit;
 	}
 
+	/* Set busy handler */
+	r = sqlite3_busy_timeout(newowl->db, 1000);
+	if (r != SQLITE_OK) {
+		pr_err(newowl, "sqlite3_busy_timeout() [%d]: %s\n", r, sqlite3_errstr(r));
+		r = -EBADF;
+		goto exit;
+	}
+
 	*owl = newowl;
 	newowl = NULL;
 	r = 0;
@@ -597,6 +605,7 @@ int libowl_update(struct libowl* owl)
 		if (owl->loglevel >= LIBOWL_LOGLEVEL_DEBUG)
 			print_sensor_reading(owl, &owl->sensors[i], value, epoch);
 	}
+
 	return sensors_updated;
 }
 
