@@ -48,7 +48,7 @@ static int monotonic(struct timespec* ts, void* priv)
 
 TEST_CASE("single sensor") {
 	struct libowl *owl = nullptr;
-	REQUIRE(libowl_open(&owl, "file::memory:?cache=shared", LIBOWL_OPEN_WRITE | LIBOWL_LOGLEVEL_DEBUG) == 0);
+	REQUIRE(libowl_open(&owl, "file::memory:?cache=shared", LIBOWL_OPEN_WRITE) == 0);
 	auto at_exit = std::unique_ptr<struct libowl, Deleter>(owl);
 
 	int time_ms = 0;
@@ -71,7 +71,7 @@ TEST_CASE("single sensor") {
 
 TEST_CASE("libowl_update_delay") {
 	struct libowl *owl = nullptr;
-	REQUIRE(libowl_open(&owl, "file::memory:?cache=shared", LIBOWL_OPEN_WRITE | LIBOWL_LOGLEVEL_DEBUG) == 0);
+	REQUIRE(libowl_open(&owl, "file::memory:?cache=shared", LIBOWL_OPEN_WRITE) == 0);
 	auto at_exit = std::unique_ptr<struct libowl, Deleter>(owl);
 
 	int time_ms = 0;
@@ -105,7 +105,7 @@ static int monotonic_ns(struct timespec* ts, void* priv)
 
 TEST_CASE("libowl_update_delay round up nano to milli") {
 	struct libowl *owl = nullptr;
-	REQUIRE(libowl_open(&owl, "file::memory:?cache=shared", LIBOWL_OPEN_WRITE | LIBOWL_LOGLEVEL_DEBUG) == 0);
+	REQUIRE(libowl_open(&owl, "file::memory:?cache=shared", LIBOWL_OPEN_WRITE) == 0);
 	auto at_exit = std::unique_ptr<struct libowl, Deleter>(owl);
 
 	struct timespec time_now;
@@ -152,7 +152,7 @@ static void sensor_data_equal(const struct libowl_sensor_data* lhs, const struct
 TEST_CASE("libowl_read") {
 	/* Prepare database with separate entries, use our monotonic with second resolution to avoid issues with epoch double precision */
 	struct libowl *owl = nullptr;
-	REQUIRE(libowl_open(&owl, "file::memory:?cache=shared", LIBOWL_OPEN_WRITE | LIBOWL_LOGLEVEL_DEBUG | LIBOWL_TIMESTAMP_MONOTONIC) == 0);
+	REQUIRE(libowl_open(&owl, "file::memory:?cache=shared", LIBOWL_OPEN_WRITE | LIBOWL_TIMESTAMP_MONOTONIC) == 0);
 	auto at_exit = std::unique_ptr<struct libowl, Deleter>(owl);
 	int seconds = 0;
 	REQUIRE(libowl_set_monotonic(owl, monotonic_s, &seconds) == 0);

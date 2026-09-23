@@ -16,11 +16,18 @@ struct libowl;
  * Returns 0 on success or negative errno for errors. */
 enum libowl_open_flags {
 	LIBOWL_OPEN_WRITE = 1 << 0,          /* Allow writing, in addition to reading */
-	LIBOWL_LOGLEVEL_DEBUG = 1 << 1,      /* Output debug messages */
 	LIBOWL_TIMESTAMP_MONOTONIC = 1 << 2, /* Get sensors timestamps (epoch) from monotonic instead of realtime clock */
 };
 int libowl_open(struct libowl** owl, const char* path, int flags);
 int libowl_close(struct libowl* owl);
+
+/* Set loglevel. Default is LIBOWL_LOGLEVEL_NONE. */
+enum libowl_loglevel {
+	LIBOWL_LOGLEVEL_NONE,
+	LIBOWL_LOGLEVEL_ERROR,
+	LIBOWL_LOGLEVEL_DEBUG,
+};
+void libowl_set_loglevel(struct libowl* owl, int loglevel);
 
 /*
  * Set monotonic clock implemenation. Allows replacing default monotonic clock
