@@ -19,6 +19,7 @@ static void print_usage()
 	printf("  -d/--database:  Database file\n");
 	printf("  -c/--config:    Config file\n");
 	printf("Optional\n");
+	printf("  --delay         Time in seconds to buffer readings before writing to disk\n");
 	printf("  -h/--help:      This message\n");
 	printf("Returns 0 if OK");
 	printf("\n");
@@ -291,6 +292,7 @@ int main (int argc, char **argv)
 	char *database_path = NULL;
 	char *config_path = NULL;
 	int debug = 0;
+	int delay_ms = 0;
 
 	for (int i = 1; i < argc; i++) {
 		if (!strcmp("--database", argv[i]) || !strcmp("-d", argv[i])) {
@@ -307,6 +309,20 @@ int main (int argc, char **argv)
 				return EINVAL;
 			}
 			config_path = argv[i];
+		}
+		else
+		if (!strcmp("--delay", argv[i])) {
+			if (++i >= argc) {
+				fprintf(stderr, "Invalid --delay\n");
+				return EINVAL;
+			}
+			char *endptr = NULL;
+			const long result = strtol(argv[i], &endptr, 0);
+			if (endptr == NULL || result < INT_MIN || result > (INT_MAX / 1000)) {
+				fprintf(stderr, "Invalid --delay\n");
+				return EINVAL;
+			}
+			delay_ms = (int) result * 1000;
 		}
 		else
 		if (!strcmp("--help", argv[i]) || !strcmp("-h", argv[i])) {
@@ -378,6 +394,8 @@ int main (int argc, char **argv)
 	}
 	/* Set loglevel to output errors */
 	libowl_set_loglevel(owl, debug ? LIBOWL_LOGLEVEL_DEBUG : LIBOWL_LOGLEVEL_ERROR);
+	/* commit to disk every 10 seconds */
+	libowl_set_buffer_duration(owl, delay_ms);
 
 	/* Open iio context */
 	ctx = iio_create_default_context();
@@ -404,11 +422,9 @@ int main (int argc, char **argv)
 			goto exit;
 		}
 
-		/* Exit due to signal */
-		if (fds.revents != 0) {
-			printf("INTERRUPT -- EXIT\n");
-			break;
-		}
+		/* prepare exit due to signal, set buffer duration 0 to ensure write to disk */
+		if (fds.revents != 0)
+			libowl_set_buffer_duration(owl, 0);
 
 		/* update sensors */
 		r = libowl_update(owl);
@@ -416,6 +432,12 @@ int main (int argc, char **argv)
 			fprintf(stderr, "failed polling sensors [%d]: %s\n", -r, strerror(-r));
 			r = -r;
 			goto exit;
+		}
+
+		/* exit due to signal */
+		if (fds.revents != 0) {
+			printf("INTERRUPT -- EXIT\n");
+			break;
 		}
 	}
 

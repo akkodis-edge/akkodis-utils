@@ -13,7 +13,6 @@ struct libowl_sensor {
 	char *name;
 	int type;
 	int flags;
-	uint32_t interval_ms;
 	struct timespec last_poll;
 	struct timespec interval;
 	struct libowl_sensor_ops ops;
@@ -24,10 +23,15 @@ struct libowl {
 	struct sqlite3 *db;
 	int flags;
 	int loglevel;
+	struct timespec buffer_duration;
+	struct timespec buffer_end;
 	struct libowl_sensor *sensors;
 	size_t sensors_size;
 	int (*monotonic)(struct timespec*, void*);
 	void *monotonic_priv;
+	struct libowl_sensor_data *buf;
+	size_t buf_size;
+	size_t buf_pos;
 };
 
 static void timespec_add(struct timespec* result, const struct timespec* lhs, const struct timespec* rhs)
@@ -59,6 +63,12 @@ static int timespec_cmp(const struct timespec* lhs, const struct timespec* rhs)
 		|| (lhs->tv_sec == rhs->tv_sec && lhs->tv_nsec > rhs->tv_nsec))
 		return 1;
 	return -1;
+}
+
+static void timespec_from_ms(struct timespec* ts, int ms)
+{
+	ts->tv_sec = ms / 1000;
+	ts->tv_nsec = (ms % 1000) * 1000000;
 }
 
 static int libowl_default_monotonic(struct timespec* time, void* priv)
@@ -108,7 +118,7 @@ static void mprint(FILE* stream, const char* fmt, ...)
 	if (owl->loglevel >= LIBOWL_LOGLEVEL_DEBUG) \
 		{mprint(stderr, "libowl: dbg: " fmt, ##__VA_ARGS__);}
 
-static int libowl_create_table(struct libowl* owl, const char* statement)
+static int libowl_single_step(struct libowl* owl, const char* statement)
 {
 	sqlite3_stmt *stmt = NULL;
 	int r = sqlite3_prepare_v2(owl->db, statement, -1, &stmt, NULL);
@@ -203,7 +213,7 @@ static int libowl_init_database(struct libowl* owl)
 	if (r != 0)
 		return r;
 
-	r = libowl_create_table(owl,
+	r = libowl_single_step(owl,
 		"CREATE TABLE IF NOT EXISTS category_type("
 			"id INTEGER PRIMARY KEY,"
 			"name TEXT NOT NULL,"
@@ -216,7 +226,7 @@ static int libowl_init_database(struct libowl* owl)
 	if (r != 0)
 		return r;
 
-	r = libowl_create_table(owl,
+	r = libowl_single_step(owl,
 		"CREATE TABLE IF NOT EXISTS sensors("
 				"id INTEGER PRIMARY KEY,"
 				"type_id INTEGER NOT NULL,"
@@ -227,7 +237,7 @@ static int libowl_init_database(struct libowl* owl)
 	if (r != 0)
 		return r;
 
-	r = libowl_create_table(owl,
+	r = libowl_single_step(owl,
 		"CREATE TABLE IF NOT EXISTS data("
 				"id INTEGER PRIMARY KEY,"
 				"sensor_id INTEGER NOT NULL,"
@@ -296,6 +306,13 @@ void libowl_set_loglevel(struct libowl* owl, int loglevel)
 	owl->loglevel = loglevel;
 }
 
+void libowl_set_buffer_duration(struct libowl* owl, int duration_ms)
+{
+	if (owl == NULL)
+		return;
+	timespec_from_ms(&owl->buffer_duration, duration_ms > 0 ? duration_ms : 0);
+}
+
 int libowl_set_monotonic(struct libowl* owl, int (*monotonic)(struct timespec*, void*), void* monotonic_priv)
 {
 	if (owl == NULL || monotonic == NULL)
@@ -327,14 +344,10 @@ int libowl_close(struct libowl* owl)
 		free(owl->sensors);
 		owl->sensors = NULL;
 	}
+	if (owl->buf != NULL)
+		free(owl->buf);
 	free(owl);
 	return 0;
-}
-
-static void timespec_from_ms(struct timespec* ts, int ms)
-{
-	ts->tv_sec = ms / 1000;
-	ts->tv_nsec = (ms % 1000) * 1000000;
 }
 
 enum bind_type {
@@ -458,6 +471,7 @@ int libowl_add_sensor(struct libowl* owl, int type, const char* name, int flags,
 		r = -EBADF;
 		goto exit;
 	}
+
 	r = 0;
 exit:
 	if (stmt != NULL)
@@ -492,65 +506,37 @@ static char* join_statement(const struct libowl_statement_part* parts, size_t si
 	return sql;
 }
 
-static int libowl_sensor_push(struct libowl* owl, struct libowl_sensor* sensor, int value, double* epoch)
+static int libowl_sensor_push(struct libowl* owl, struct libowl_sensor_data* data)
 {
-	const int use_monotonic = (owl->flags & LIBOWL_TIMESTAMP_MONOTONIC) == LIBOWL_TIMESTAMP_MONOTONIC;
-	double time = 0;
-
-	if (use_monotonic) {
-		struct timespec time_now;
-		int r = owl->monotonic(&time_now, owl->monotonic_priv);
-		if (r != 0)
-			return r;
-		time = (double) time_now.tv_sec + ((double) time_now.tv_nsec / 1.0e9);
-	}
-
-	const struct libowl_statement_part parts[] = {
-		{.str = "INSERT INTO data(sensor_id, value, epoch) VALUES "
-				"((SELECT id from sensors WHERE type_id=(SELECT id from category_type WHERE name=(?)) AND name=(?)),"
-				"?, ",
-		.options = 0},
-		{.str = use_monotonic ? "(?))" : "unixepoch('now', 'subsec'))",
-		.options = 0},
-		{.str = " RETURNING epoch",
-		.options = 0},
-	};
-
 	const struct libowl_bind bind[] = {
-		{.col = 1, .type = BIND_TEXT, .data.str = libowl_sensor_type_str(sensor->type)},
-		{.col = 2, .type = BIND_TEXT, .data.str = sensor->name},
-		{.col = 3, .type = BIND_INT, .data.integer = value},
-		{.col = 4, .type = use_monotonic ? BIND_DOUBLE : BIND_IGNORE, .data.dbl = time},
+		{.col = 1, .type = BIND_TEXT, .data.str = libowl_sensor_type_str(data->type)},
+		{.col = 2, .type = BIND_TEXT, .data.str = data->name},
+		{.col = 3, .type = BIND_INT, .data.integer = data->value},
+		{.col = 4, .type = BIND_DOUBLE, .data.dbl = data->epoch},
 	};
 
 	sqlite3_stmt *stmt = NULL;
-	char *sql = NULL;
 	int r = 0;
 
-	sql = join_statement(parts, ARRAY_SIZE(parts));
-	if (sql == NULL) {
-		r = -ENOMEM;
-		goto exit;
-	}
-
-	stmt = libowl_stmt_bind(owl, sql, bind, ARRAY_SIZE(bind));
+	stmt = libowl_stmt_bind(owl,
+			"INSERT INTO data(sensor_id, value, epoch) VALUES "
+				"((SELECT id from sensors WHERE type_id=(SELECT id from category_type WHERE name=(?)) AND name=(?)),"
+				"?, (?))"
+				, bind, ARRAY_SIZE(bind));
 	if (stmt == NULL) {
 		r = -EBADF;
 		goto exit;
 	}
 
 	r = sqlite3_step(stmt);
-	if (r != SQLITE_ROW) {
+	if (r != SQLITE_DONE) {
 		pr_err(owl, "sqlite3_step(insert_sensor) [%d]: %s\n", r, sqlite3_errstr(r));
 		r = -EBADF;
 		goto exit;
 	}
-	*epoch = sqlite3_column_double(stmt, 0);
 
 	r = 0;
 exit:
-	if (sql != NULL)
-		free(sql);
 	if (stmt != NULL)
 		sqlite3_finalize(stmt);
 	return r;
@@ -564,13 +550,63 @@ static int sensor_next_update(struct timespec* next_update, const struct timespe
 	return timespec_cmp(next_update, time_now) <= 0;
 }
 
-static void print_sensor_reading(const struct libowl* owl, const struct libowl_sensor* sensor, int value, double epoch)
+static void print_sensor_reading(const struct libowl* owl, const struct libowl_sensor_data* data)
 {
 	char timestr[200];
-	const time_t seconds = (time_t) epoch; /* double to time_t, drop fractional seconds */
+	const time_t seconds = (time_t) data->epoch; /* double to time_t, drop fractional seconds */
 	if (strftime(timestr, sizeof(timestr), "%Y-%m-%d %T", gmtime(&seconds)) < 1)
 		timestr[0] = '\0';
-	pr_dbg(owl, "[%s] %s %s: %d\n", timestr, libowl_sensor_type_str(sensor->type), sensor->name, value);
+	pr_dbg(owl, "[%s] %s %s: %d\n", timestr, libowl_sensor_type_str(data->type), data->name, data->value);
+}
+
+static void calc_buffer_timer(const struct timespec* time_now, const struct timespec* duration, struct timespec* end)
+{
+	/* not enabled */
+	if (duration->tv_sec == 0 && duration->tv_nsec == 0) {
+		end->tv_sec = 0;
+		end->tv_nsec = 0;
+		return;
+	}
+	/* already enabled */
+	if (end->tv_sec != 0 && end->tv_nsec != 0)
+		return;
+	/* calculate end time */
+	timespec_add(end, time_now, duration);
+	return;
+}
+
+static int libowl_get_epoch(struct libowl* owl, double* epoch)
+{
+	int r = 0;
+	if ((owl->flags & LIBOWL_TIMESTAMP_MONOTONIC) == LIBOWL_TIMESTAMP_MONOTONIC) {
+		struct timespec time_now;
+		r = owl->monotonic(&time_now, owl->monotonic_priv);
+		if (r != 0)
+			return r;
+		*epoch = (double) time_now.tv_sec + ((double) time_now.tv_nsec / 1.0e9);
+		return 0;
+	}
+
+	sqlite3_stmt *stmt = NULL;
+	r = sqlite3_prepare_v2(owl->db, "SELECT unixepoch('now', 'subsec')", -1, &stmt, NULL);
+	if (r != SQLITE_OK) {
+		pr_err(owl, "sqlite3_prepare_v2(epoch) [%d]: %s\n", r, sqlite3_errstr(r));
+		r = -EBADF;
+		goto exit;
+	}
+	r = sqlite3_step(stmt);
+	if (r != SQLITE_ROW) {
+		pr_err(owl, "sqlite3_step(epoch) [%d]: %s\n", r, sqlite3_errstr(r));
+		r = -EBADF;
+		goto exit;
+	}
+
+	*epoch = sqlite3_column_double(stmt, 0);
+	r = 0;
+exit:
+	if (stmt != NULL)
+		sqlite3_finalize(stmt);
+	return r;
 }
 
 int libowl_update(struct libowl* owl)
@@ -597,13 +633,53 @@ int libowl_update(struct libowl* owl)
 			pr_err(owl, "read sensor %s [%d]: %s\n", owl->sensors[i].name, r, strerror(r));
 			continue;
 		}
-		double epoch = 0.0;
-		r = libowl_sensor_push(owl, &owl->sensors[i], value, &epoch);
+		/* prepare buffer space */
+		if (owl->buf_pos <= owl->buf_size) {
+			/* allocate space for 10 addition readings if no buffer available */
+			struct libowl_sensor_data* ptr = (struct libowl_sensor_data*) realloc(owl->buf, sizeof(owl->buf[0]) * (owl->buf_size + 10));
+			if (ptr == NULL)
+				return -ENOMEM;
+			owl->buf = ptr;
+			owl->buf_size += 10;
+		}
+		/* fill in our sensor data */
+		r = libowl_get_epoch(owl, &owl->buf[owl->buf_pos].epoch);
 		if (r != 0)
 			return r;
-		sensors_updated++;
+		owl->buf[owl->buf_pos].name = owl->sensors[i].name;
+		owl->buf[owl->buf_pos].type = owl->sensors[i].type;
+		owl->buf[owl->buf_pos].value = value;
 		if (owl->loglevel >= LIBOWL_LOGLEVEL_DEBUG)
-			print_sensor_reading(owl, &owl->sensors[i], value, epoch);
+			print_sensor_reading(owl, &owl->buf[owl->buf_pos]);
+		owl->buf_pos++;
+	}
+
+	/* Calculate next time of buffer write to disk */
+	calc_buffer_timer(&time_now, &owl->buffer_duration, &owl->buffer_end);
+
+	/* Check if time to write */
+	if (timespec_cmp(&owl->buffer_end, &time_now) <= 0) {
+		if (owl->buffer_duration.tv_sec > 0 || owl->buffer_duration.tv_nsec > 0)
+			pr_dbg(owl, "write buffer\n");
+		size_t cur = 0;
+		while (cur < owl->buf_pos) {
+			r = libowl_sensor_push(owl, &owl->buf[cur]);
+			if (r != 0)
+				break;
+			cur++;
+			sensors_updated++;
+		}
+		/* move non-written data to start of buffer */
+		if (cur > 0 && cur < owl->buf_pos)
+			memmove(owl->buf, &owl->buf[cur], sizeof(owl->buf[0]) * (owl->buf_pos - cur));
+		owl->buf_pos -= cur;
+		if (r == 0) {
+			/* mark buffer as completely written */
+			owl->buffer_end.tv_sec = 0;
+			owl->buffer_end.tv_nsec = 0;
+		}
+		if (r < 0)
+			return r;
 	}
 
 	return sensors_updated;

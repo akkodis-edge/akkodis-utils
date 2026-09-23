@@ -29,8 +29,15 @@ enum libowl_loglevel {
 };
 void libowl_set_loglevel(struct libowl* owl, int loglevel);
 
+/* Set a positive duration to buffer sensor readings before writing to disk.
+ * Default value is 0. Writing 0 or negative value disables buffering.
+ *
+ * libowl_close() will not write any remaining buffer to disk and to ensure
+ * buffer has been cleared first set buffer duration to 0
+ * and call libowl_update(). */
+void libowl_set_buffer_duration(struct libowl* owl, int duration_ms);
 /*
- * Set monotonic clock implemenation. Allows replacing default monotonic clock
+ * Set monotonic clock implementation. Allows replacing default monotonic clock
  * implementation with external function. */
 int libowl_set_monotonic(struct libowl* owl, int (*monotonic)(struct timespec*, void*), void* monotonic_priv);
 
