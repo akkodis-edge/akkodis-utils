@@ -220,11 +220,68 @@ static int create_owl_file_device(struct libowl* owl, struct sensor_config* scfg
 	return libowl_add_sensor(owl, scfg->type, scfg->name, 0, &file_sensor_ops, 1000, dev->priv);
 }
 
+static void free_devices(struct owl_device* devices, size_t size)
+{
+	if (devices != NULL) {
+		for (size_t i = 0; i < size; ++i) {
+			if (devices[i].free != NULL && devices[i].priv != NULL)
+				devices[i].free(devices[i].priv);
+		}
+		free(devices);
+	}
+}
+
+static int create_devices(struct owl_device** devices, size_t* size, struct libowl* owl, const struct config* config, struct iio_context* ctx)
+{
+	struct owl_device *ptr = NULL;
+	size_t ptr_size = 0;
+	int r = 0;
+
+	for (size_t i = 0; i < config->sensors_count; ++i) {
+		printf("SENSOR: %s type: %d method: %d device: %s channel: %s attribute: %s\n",
+			config->sensors[i].name, config->sensors[i].type, config->sensors[i].method,
+			config->sensors[i].device, config->sensors[i].channel, config->sensors[i].attribute);
+		/* allocate memory for device */
+		struct owl_device *tmpptr = realloc(ptr, sizeof(*ptr) * (ptr_size + 1));
+		if (tmpptr == NULL) {
+			r = -ENOMEM;
+			goto exit;
+		}
+		ptr = tmpptr;
+		ptr_size++;
+
+		switch (config->sensors[i].method) {
+		case OWLD_IIO:
+			r = create_owl_iio_device(owl, ctx, &config->sensors[i], &ptr[ptr_size - 1]);
+			break;
+		case OWLD_FILE:
+			r = create_owl_file_device(owl, &config->sensors[i], &ptr[ptr_size - 1]);
+			break;
+		default:
+			r = -EINVAL;
+			break;
+		}
+		if (r != 0) {
+			fprintf(stderr, "sensor %s failed adding to libowl [%d]: %s\n", config->sensors[i].name, -r, strerror(-r));
+			goto exit;
+		}
+	}
+
+	*devices = ptr;
+	*size = ptr_size;
+	r = 0;
+exit:
+	if (r != 0)
+		free_devices(ptr, ptr_size);
+	return r;
+}
+
 //NOLINTNEXTLINE(readability-function-cognitive-complexity)
 int main (int argc, char **argv)
 {
 	char *database_path = NULL;
 	char *config_path = NULL;
+	int debug = 0;
 
 	for (int i = 1; i < argc; i++) {
 		if (!strcmp("--database", argv[i]) || !strcmp("-d", argv[i])) {
@@ -246,6 +303,10 @@ int main (int argc, char **argv)
 		if (!strcmp("--help", argv[i]) || !strcmp("-h", argv[i])) {
 			print_usage();
 			return EINVAL;
+		}
+		else
+		if (!strcmp("--debug", argv[i])) {
+			debug = 1;
 		}
 		else {
 			fprintf(stderr, "Invalid argument\n");
@@ -285,6 +346,7 @@ int main (int argc, char **argv)
 	}
 	fds.events = POLLIN;
 
+	/* Parse config */
 	cyaml_config_t parser_conf = {
 		.log_fn = cyaml_log,
 		.mem_fn = cyaml_mem,
@@ -298,12 +360,15 @@ int main (int argc, char **argv)
 		goto exit;
 	}
 
-	r = libowl_open(&owl, database_path, LIBOWL_OPEN_WRITE | LIBOWL_LOGLEVEL_DEBUG);
+	/* open database */
+	r = libowl_open(&owl, database_path, LIBOWL_OPEN_WRITE);
 	if (r != 0) {
 		r = -r;
 		fprintf(stderr, "libowl: failed opening database file [%d]: %s\n", r, strerror(r));
 		goto exit;
 	}
+	/* Set loglevel to output errors */
+	libowl_set_loglevel(owl, debug ? LIBOWL_LOGLEVEL_DEBUG : LIBOWL_LOGLEVEL_ERROR);
 
 	ctx = iio_create_default_context();
 	if (ctx == NULL) {
@@ -312,47 +377,12 @@ int main (int argc, char **argv)
 		goto exit;
 	}
 
-	for (size_t i = 0; i < config->sensors_count; ++i) {
-		printf("SENSOR: %s type: %d method: %d device: %s channel: %s attribute: %s\n",
-			config->sensors[i].name, config->sensors[i].type, config->sensors[i].method,
-			config->sensors[i].device, config->sensors[i].channel, config->sensors[i].attribute);
-		/* allocate memory for device */
-		struct owl_device *ptr = realloc(devices, sizeof(*devices) * (devices_count + 1));
-		if (ptr == NULL) {
-			r = ENOMEM;
-			goto exit;
-		}
-		devices = ptr;
-		devices_count++;
-
-		switch (config->sensors[i].method) {
-			case OWLD_IIO:
-			{
-				r = create_owl_iio_device(owl, ctx, &config->sensors[i], &devices[devices_count - 1]);
-				if (r != 0) {
-					fprintf(stderr, "sensor iio %s failed adding to libowl [%d]: %s\n", config->sensors[i].name, -r, strerror(-r));
-					goto exit;
-				}
-				break;
-			}
-			case OWLD_FILE:
-			{
-				r = create_owl_file_device(owl, &config->sensors[i], &devices[devices_count - 1]);
-				if (r != 0) {
-					fprintf(stderr, "sensor file %s failed adding to libowl [%d]: %s\n", config->sensors[i].name, -r, strerror(-r));
-					goto exit;
-				}
-				break;
-			}
-			default:
-				fprintf(stderr, "Invalid sensor %s of type %d\n", config->sensors[i].name, config->sensors[i].type);
-				r = EINVAL;
-				goto exit;
-		}
+	/* Parse config for sensors */
+	r = create_devices(&devices, &devices_count, owl, config, ctx);
+	if (r != 0) {
+		r = -r;
+		goto exit;
 	}
-
-	/* last read sensor index */
-	int64_t index = 0;
 
 	while (true) {
 		/* check for pending signals */
@@ -371,44 +401,11 @@ int main (int argc, char **argv)
 		}
 
 		/* update sensors */
-		const int update_count = libowl_update(owl);
-		if (update_count < 0) {
-			fprintf(stderr, "failed polling sensors [%d]: %s\n", -update_count, strerror(-update_count));
-			r = -update_count;
+		r = libowl_update(owl);
+		if (r < 0) {
+			fprintf(stderr, "failed polling sensors [%d]: %s\n", -r, strerror(-r));
+			r = -r;
 			goto exit;
-		}
-		/* Get values if any sensor updated */
-		if (update_count > 0) {
-			while (true) {
-				const size_t sensor_data_size = 50;
-				struct libowl_sensor_data sensor_data[sensor_data_size];
-				struct libowl_filter index_filter;
-				if (libowl_filter_index(&index_filter, LIBOWL_OP_GREATER_EQUAL, index) != 0) {
-					fprintf(stderr, "failed creating filter\n");
-					r = EFAULT;
-					goto exit;
-				}
-
-				r = libowl_read(owl, 0, &index_filter, 1, sensor_data, sensor_data_size);
-				if (r < 0) {
-					fprintf(stderr, "failed reading sensors [%d]: %s\n", -update_count, strerror(-update_count));
-					r = -update_count;
-					goto exit;
-				}
-				if (r == 0)
-					break;
-				const int updated = r;
-				for (int i = 0; i < updated; ++i) {
-					char timestr[200];
-					const time_t epoch = (time_t) sensor_data[i].epoch; /* double to time_t, drop fractional seconds */
-					if (strftime(timestr, sizeof(timestr), "%Y-%m-%d %T", gmtime(&epoch)) < 1)
-						timestr[0] = '\0';
-					printf("[%s] %s: %d\n", timestr, sensor_data[i].name, sensor_data[i].value);
-					if (sensor_data[i].index >= index)
-						index = sensor_data[i].index + 1;
-					libowl_sensor_data_free(&sensor_data[i]);
-				}
-			}
 		}
 	}
 
@@ -417,13 +414,8 @@ exit:
 	cyaml_free(&parser_conf, &config_schema, config, 0);
 	if (ctx)
 		iio_context_destroy(ctx);
-	if (devices != NULL) {
-		for (size_t i = 0; i < devices_count; ++i) {
-			if (devices[i].free != NULL && devices[i].priv != NULL)
-				devices[i].free(devices[i].priv);
-		}
-		free(devices);
-	}
+	if (devices != NULL)
+		free_devices(devices, devices_count);
 	if (owl != NULL)
 		libowl_close(owl);
 	if (fds.fd >= 0)
