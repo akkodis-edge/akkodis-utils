@@ -1,0 +1,10 @@
+[Unit]
+Description="owld sensor logger service"
+
+[Service]
+Type=exec
+ExecStart=@BINDIR@/owld --config @SYSCONFDIR@/owld.conf --database /var/log/owld.db
+Restart=always
+
+[Install]
+WantedBy=multi-user.target
