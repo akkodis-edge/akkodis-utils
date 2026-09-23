@@ -170,7 +170,7 @@ static int libowl_pragma(struct libowl* owl)
 {
 	sqlite3_stmt *stmt = NULL;
 	int r = sqlite3_prepare_v2(owl->db,
-		" PRAGMA journal_mode = WAL;"
+		" PRAGMA journal_mode = DELETE;"
 		" PRAGMA foreign_keys = ON;",
 		-1, &stmt, NULL);
 	if (r != SQLITE_OK) {
