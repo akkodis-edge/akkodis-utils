@@ -450,6 +450,12 @@ int libowl_add_sensor(struct libowl* owl, int type, const char* name, int flags,
 	if (owl == NULL || !is_write(owl) || libowl_sensor_type_str(type) == NULL || name == NULL || name[0] == '\0' || ops == NULL || interval_ms < 0)
 		return -EINVAL;
 
+	/* Block creation if we already have a sensor with same name and type */
+	for (size_t i = 0; i < owl->sensors_size; ++i) {
+		if (type == owl->sensors[i].type && strcmp(name, owl->sensors[i].name) == 0)
+			return -EEXIST;
+	}
+
 	void *ptr = realloc(owl->sensors, sizeof(*owl->sensors) * (owl->sensors_size + 1));
 	if (ptr == NULL)
 		return -ENOMEM;
