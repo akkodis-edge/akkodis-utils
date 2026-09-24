@@ -90,6 +90,10 @@ const char* libowl_sensor_type_str(int type)
 	switch (type) {
 	case LIBOWL_SENSOR_TEMP:
 		return "TEMP";
+	case LIBOWL_SENSOR_VOLTAGE:
+		return "VOLTAGE";
+	case LIBOWL_SENSOR_CURRENT:
+		return "CURRENT";
 	default:
 		return NULL;
 	}
@@ -99,6 +103,10 @@ static int libowl_sensor_type_int(const char* str)
 {
 	if (strcmp(str, "TEMP") == 0)
 		return LIBOWL_SENSOR_TEMP;
+	if (strcmp(str, "VOLTAGE") == 0)
+		return LIBOWL_SENSOR_VOLTAGE;
+	if (strcmp(str, "CURRENT") == 0)
+		return LIBOWL_SENSOR_CURRENT;
 	return INT_MAX;
 }
 
@@ -154,8 +162,8 @@ static int libowl_populate_category(struct libowl* owl)
 		goto exit;
 	}
 
-	for (int i = 0; i <= LIBOWL_SENSOR_TEMP; ++i) {
-		r = sqlite3_bind_text(stmt, 1, libowl_sensor_type_str(LIBOWL_SENSOR_TEMP), -1, SQLITE_STATIC);
+	for (int i = 0; i <= LIBOWL_SENSOR_CURRENT; ++i) {
+		r = sqlite3_bind_text(stmt, 1, libowl_sensor_type_str(i), -1, SQLITE_STATIC);
 		if (r != SQLITE_OK) {
 			pr_err(owl, "sqlite3_bind_text(category) [%d]: %s\n", r, sqlite3_errstr(r));
 			r = -EBADF;
@@ -164,6 +172,12 @@ static int libowl_populate_category(struct libowl* owl)
 		r = sqlite3_step(stmt);
 		if (r != SQLITE_DONE) {
 			pr_err(owl, "sqlite3_step(category) [%d]: %s\n", r, sqlite3_errstr(r));
+			r = -EBADF;
+			goto exit;
+		}
+		r = sqlite3_reset(stmt);
+		if (r != SQLITE_OK) {
+			pr_err(owl, "sqlite3_reset(category) [%d]: %s\n", r, sqlite3_errstr(r));
 			r = -EBADF;
 			goto exit;
 		}

@@ -44,6 +44,8 @@ int libowl_set_monotonic(struct libowl* owl, int (*monotonic)(struct timespec*, 
 /* Types of sensors */
 enum libowl_sensor_type {
 	LIBOWL_SENSOR_TEMP, /* Temperature in milli C */
+	LIBOWL_SENSOR_VOLTAGE, /* Voltage in milli V */
+	LIBOWL_SENSOR_CURRENT, /* Current in milli A */
 };
 const char* libowl_sensor_type_str(int type);
 struct libowl_sensor_ops {

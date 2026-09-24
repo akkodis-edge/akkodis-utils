@@ -1,4 +1,5 @@
 #include <memory>
+#include <vector>
 #include <cstring>
 #include "libowl.h"
 #define CATCH_CONFIG_MAIN
@@ -13,6 +14,10 @@ struct Deleter {
 	void operator()(struct libowl* owl)
 	{
 		libowl_close(owl);
+	}
+	void operator()(struct libowl_sensor_data* data)
+	{
+		libowl_sensor_data_free(data);
 	}
 	void operator()(struct test_data* test)
 	{
@@ -44,6 +49,39 @@ static int monotonic(struct timespec* ts, void* priv)
 	int *time_ms = reinterpret_cast<int*>(priv);
 	timespec_from_ms(ts, *time_ms);
 	return 0;
+}
+
+struct SensorType {
+	const char* name;
+	int type;
+};
+
+TEST_CASE("sensor types") {
+	struct libowl *owl = nullptr;
+	REQUIRE(libowl_open(&owl, "file::memory:?cache=shared", LIBOWL_OPEN_WRITE) == 0);
+	auto at_exit = std::unique_ptr<struct libowl, Deleter>(owl);
+
+	const std::vector<SensorType> sensors = {
+		{.name = "TEMP", .type = LIBOWL_SENSOR_TEMP},
+		{.name = "VOLTAGE", .type = LIBOWL_SENSOR_VOLTAGE},
+		{.name = "CURRENT", .type = LIBOWL_SENSOR_CURRENT},
+	};
+	for (const auto& sensor : sensors) {
+		/* confirm name */
+		REQUIRE(strcmp(libowl_sensor_type_str(sensor.type), sensor.name) == 0);
+		/* Add sensor */
+		int dummy_sensor_data = 0;
+		REQUIRE(libowl_add_sensor(owl, sensor.type, libowl_sensor_type_str(sensor.type), 0, &dummy_ops, 0, &dummy_sensor_data) == 0);
+		/* Add single reading */
+		REQUIRE(libowl_update(owl) > 0);
+		/* retrieve value */
+		struct libowl_sensor_data sdat {};
+		auto at_data_exit = std::unique_ptr<struct libowl_sensor_data, Deleter>(&sdat);
+		struct libowl_filter filter {};
+		REQUIRE(libowl_filter_name(&filter, LIBOWL_OP_EQUAL, libowl_sensor_type_str(sensor.type)) == 0);
+		REQUIRE(libowl_read(owl, 0, &filter, 1, &sdat, 1) == 1);
+		REQUIRE(sdat.type == sensor.type);
+	}
 }
 
 TEST_CASE("single sensor") {
