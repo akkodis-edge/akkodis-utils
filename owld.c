@@ -43,6 +43,7 @@ struct sensor_config {
 struct config {
 	struct sensor_config *sensors;
 	size_t sensors_count;
+	int buffer_period_ms;
 };
 
 static const cyaml_strval_t sensor_config_type_strings[] = {
@@ -78,6 +79,7 @@ static const cyaml_schema_value_t sensor_config_schema = {
 static const cyaml_schema_field_t config_fields[] = {
 	CYAML_FIELD_SEQUENCE("sensors", CYAML_FLAG_POINTER, struct config, sensors,
 			&sensor_config_schema, 0, CYAML_UNLIMITED),
+	CYAML_FIELD_INT("buffer_period_ms", CYAML_FLAG_OPTIONAL, struct config, buffer_period_ms),
 	CYAML_FIELD_END
 };
 
@@ -292,7 +294,7 @@ int main (int argc, char **argv)
 	char *database_path = NULL;
 	char *config_path = NULL;
 	int debug = 0;
-	int delay_ms = 0;
+	int delay_ms = -1;
 
 	for (int i = 1; i < argc; i++) {
 		if (!strcmp("--database", argv[i]) || !strcmp("-d", argv[i])) {
@@ -318,7 +320,7 @@ int main (int argc, char **argv)
 			}
 			char *endptr = NULL;
 			const long result = strtol(argv[i], &endptr, 0);
-			if (endptr == NULL || result < INT_MIN || result > (INT_MAX / 1000)) {
+			if (endptr == NULL || result < 0 || result > (INT_MAX / 1000)) {
 				fprintf(stderr, "Invalid --delay\n");
 				return EINVAL;
 			}
@@ -384,6 +386,15 @@ int main (int argc, char **argv)
 		r = EINVAL;
 		goto exit;
 	}
+
+	printf("Database: \"%s\"\n", database_path);
+	/* Get buffer period unless provided on commandline */
+	if (delay_ms < 0)
+		delay_ms = config->buffer_period_ms;
+	if (delay_ms > 0)
+		printf("Buffering: ON (%d ms)\n", delay_ms);
+	else
+		printf("Buffering: OFF\n");
 
 	/* open database */
 	r = libowl_open(&owl, database_path, LIBOWL_OPEN_WRITE);
