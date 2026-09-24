@@ -27,22 +27,32 @@ ifeq ($(abspath $(BUILD)),$(shell pwd))
 $(error "ERROR: Build dir can't be equal to source dir")
 endif
 
-# Always build targets without additional dependencies
-ALL_TARGETS_BIN = atcli
+WITH_ATCLI ?=  1
+ifeq ($(WITH_ATCLI), 1)
+	ALL_TARGETS_BIN += atcli
+endif
+
+WITH_LIBOWL ?= 1
+ifeq ($(WITH_LIBOWL), 1)
+	ALL_TARGETS_LIB += libowl.so libowl.so.1
+	ALL_TARGETS_INC += libowl.h
+endif
 
 WITH_OWLD ?= 1
 ifeq ($(WITH_OWLD), 1)
+ifneq ($(WITH_LIBOWL),1)
+$(error "ERROR: owld requires WITH_LIBOWL=1")
+endif
 	ALL_TARGETS_BIN += owld
-	ALL_TARGETS_LIB += libowl.so libowl.so.1
-	ALL_TARGETS_INC += libowl.h
 	ALL_TARGETS_SYSTEMD += owld.service
 endif
 
 WITH_OWL ?= 1
 ifeq ($(WITH_OWL), 1)
+ifneq ($(WITH_LIBOWL),1)
+$(error "ERROR: owl requires WITH_LIBOWL=1")
+endif
 	ALL_TARGETS_BIN += owl
-	ALL_TARGETS_LIB += libowl.so libowl.so.1
-	ALL_TARGETS_INC += libowl.h
 endif
 
 .PHONY: all $(ALL_TARGETS_BIN)
