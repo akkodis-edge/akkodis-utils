@@ -22,7 +22,8 @@ class LibOwlFilterData(Union):
     _fields_ = [
         ('mdouble', c_double),
         ('mi64', c_int64),
-        ('str', c_char_p)]
+        ('str', c_char_p),
+        ('mint', c_int)]
 
 class LibOwlFilter(Structure):
     _fields_ = [
