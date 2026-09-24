@@ -99,17 +99,6 @@ const char* libowl_sensor_type_str(int type)
 	}
 }
 
-static int libowl_sensor_type_int(const char* str)
-{
-	if (strcmp(str, "TEMP") == 0)
-		return LIBOWL_SENSOR_TEMP;
-	if (strcmp(str, "VOLTAGE") == 0)
-		return LIBOWL_SENSOR_VOLTAGE;
-	if (strcmp(str, "CURRENT") == 0)
-		return LIBOWL_SENSOR_CURRENT;
-	return INT_MAX;
-}
-
 static void mprint(FILE* stream, const char* fmt, ...)
 {
 	va_list args;
@@ -141,46 +130,6 @@ static int libowl_single_step(struct libowl* owl, const char* statement)
 		pr_err(owl, "sqlite3_step(create_table) [%d]: %s\n", r, sqlite3_errstr(r));
 		r = -EBADF;
 		goto exit;
-	}
-
-	r = 0;
-exit:
-	if (stmt != NULL)
-		sqlite3_finalize(stmt);
-	return r;
-}
-
-static int libowl_populate_category(struct libowl* owl)
-{
-	sqlite3_stmt *stmt = NULL;
-	int r = sqlite3_prepare_v2(owl->db,
-		"INSERT OR IGNORE INTO category_type(name) VALUES (?)",
-		-1, &stmt, NULL);
-	if (r != SQLITE_OK) {
-		pr_err(owl, "sqlite3_prepare_v2(category) [%d]: %s\n", r, sqlite3_errstr(r));
-		r = -EBADF;
-		goto exit;
-	}
-
-	for (int i = 0; i <= LIBOWL_SENSOR_CURRENT; ++i) {
-		r = sqlite3_bind_text(stmt, 1, libowl_sensor_type_str(i), -1, SQLITE_STATIC);
-		if (r != SQLITE_OK) {
-			pr_err(owl, "sqlite3_bind_text(category) [%d]: %s\n", r, sqlite3_errstr(r));
-			r = -EBADF;
-			goto exit;
-		}
-		r = sqlite3_step(stmt);
-		if (r != SQLITE_DONE) {
-			pr_err(owl, "sqlite3_step(category) [%d]: %s\n", r, sqlite3_errstr(r));
-			r = -EBADF;
-			goto exit;
-		}
-		r = sqlite3_reset(stmt);
-		if (r != SQLITE_OK) {
-			pr_err(owl, "sqlite3_reset(category) [%d]: %s\n", r, sqlite3_errstr(r));
-			r = -EBADF;
-			goto exit;
-		}
 	}
 
 	r = 0;
@@ -228,24 +177,10 @@ static int libowl_init_database(struct libowl* owl)
 		return r;
 
 	r = libowl_single_step(owl,
-		"CREATE TABLE IF NOT EXISTS category_type("
-			"id INTEGER PRIMARY KEY,"
-			"name TEXT NOT NULL,"
-		   "UNIQUE(name)"
-		") STRICT");
-	if (r != 0)
-		return r;
-
-	r = libowl_populate_category(owl);
-	if (r != 0)
-		return r;
-
-	r = libowl_single_step(owl,
 		"CREATE TABLE IF NOT EXISTS sensors("
 				"id INTEGER PRIMARY KEY,"
-				"type_id INTEGER NOT NULL,"
+				"type_id INTEGER NOT NULL CHECK(type_id >= 0),"
 				"name TEXT NOT NULL,"
-				"FOREIGN KEY(type_id) REFERENCES category_type(id),"
 				"UNIQUE(type_id, name)"
 			") STRICT");
 	if (r != 0)
@@ -492,19 +427,18 @@ int libowl_add_sensor(struct libowl* owl, int type, const char* name, int flags,
 
 	const struct libowl_bind bind[] = {
 		{.col = 1, .type = BIND_TEXT, .data.str = sensor->name},
-		{.col = 2, .type = BIND_TEXT, .data.str = libowl_sensor_type_str(sensor->type)},
+		{.col = 2, .type = BIND_INT, .data.integer = sensor->type},
 	};
 
 	sqlite3_stmt *stmt = libowl_prepare_bind(owl,
-		"INSERT OR IGNORE INTO sensors(name, type_id) VALUES "
-			"(?, (SELECT id from category_type WHERE name=(?)))",
+		"INSERT OR IGNORE INTO sensors(name, type_id) VALUES (?, ?)",
 		bind, ARRAY_SIZE(bind));
 	if (stmt == NULL)
 		return -EBADF;
 
 	r = sqlite3_step(stmt);
 	if (r != SQLITE_DONE) {
-		pr_err(owl, "sqlite3_step(insert_sensor) [%d]: %s\n", r, sqlite3_errstr(r));
+		pr_err(owl, "sqlite3_step(add_sensor) [%d]: %s\n", r, sqlite3_errstr(r));
 		r = -EBADF;
 		goto exit;
 	}
@@ -548,11 +482,10 @@ static int libowl_sensor_push(struct libowl* owl, const struct libowl_sensor_dat
 	sqlite3_stmt *stmt = NULL;
 	int r = sqlite3_prepare_v2(owl->db,
 		"INSERT INTO data(sensor_id, value, epoch) VALUES "
-			"((SELECT id from sensors WHERE type_id=(SELECT id from category_type WHERE name=(?)) AND name=(?)),"
-			"?, (?))",
+			"((SELECT id from sensors WHERE type_id=(?) AND name=(?)), (?), (?))",
 		-1, &stmt, NULL);
 	if (r != SQLITE_OK) {
-		pr_err(owl, "sqlite3_prepare_v2(insert_sensor) [%d]: %s\n", r, sqlite3_errstr(r));
+		pr_err(owl, "sqlite3_prepare_v2(insert_data) [%d]: %s\n", r, sqlite3_errstr(r));
 		r = -EBADF;
 		goto exit;
 	}
@@ -561,7 +494,7 @@ static int libowl_sensor_push(struct libowl* owl, const struct libowl_sensor_dat
 
 	for (size_t i = 0; i < size; ++i) {
 		const struct libowl_bind bind[] = {
-			{.col = 1, .type = BIND_TEXT, .data.str = libowl_sensor_type_str(data[i].type)},
+			{.col = 1, .type = BIND_INT, .data.integer = data[i].type},
 			{.col = 2, .type = BIND_TEXT, .data.str = data[i].name},
 			{.col = 3, .type = BIND_INT, .data.integer = data[i].value},
 			{.col = 4, .type = BIND_DOUBLE, .data.dbl = data[i].epoch},
@@ -571,13 +504,13 @@ static int libowl_sensor_push(struct libowl* owl, const struct libowl_sensor_dat
 			goto exit;
 		r = sqlite3_step(stmt);
 		if (r != SQLITE_DONE) {
-			pr_err(owl, "sqlite3_step(insert_sensor) [%d]: %s\n", r, sqlite3_errstr(r));
+			pr_err(owl, "sqlite3_step(insert_data) [%d]: %s\n", r, sqlite3_errstr(r));
 			r = -EBADF;
 			goto exit;
 		}
 		r = sqlite3_reset(stmt);
 		if (r != SQLITE_OK) {
-			pr_err(owl, "sqlite3_reset(insert_sensor) [%d]: %s\n", r, sqlite3_errstr(r));
+			pr_err(owl, "sqlite3_reset(insert_data) [%d]: %s\n", r, sqlite3_errstr(r));
 			r = -EBADF;
 			goto exit;
 		}
