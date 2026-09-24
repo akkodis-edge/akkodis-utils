@@ -311,6 +311,11 @@ void libowl_set_buffer_duration(struct libowl* owl, int duration_ms)
 	if (owl == NULL)
 		return;
 	timespec_from_ms(&owl->buffer_duration, duration_ms > 0 ? duration_ms : 0);
+	/* disable any on-going buffer period if buffering is set to disabled */
+	if (duration_ms < 1) {
+		owl->buffer_end.tv_sec = 0;
+		owl->buffer_end.tv_nsec = 0;
+	}
 }
 
 int libowl_set_monotonic(struct libowl* owl, int (*monotonic)(struct timespec*, void*), void* monotonic_priv)
@@ -559,22 +564,6 @@ static void print_sensor_reading(const struct libowl* owl, const struct libowl_s
 	pr_dbg(owl, "[%s] %s %s: %d\n", timestr, libowl_sensor_type_str(data->type), data->name, data->value);
 }
 
-static void calc_buffer_timer(const struct timespec* time_now, const struct timespec* duration, struct timespec* end)
-{
-	/* not enabled */
-	if (duration->tv_sec == 0 && duration->tv_nsec == 0) {
-		end->tv_sec = 0;
-		end->tv_nsec = 0;
-		return;
-	}
-	/* already enabled */
-	if (end->tv_sec != 0 && end->tv_nsec != 0)
-		return;
-	/* calculate end time */
-	timespec_add(end, time_now, duration);
-	return;
-}
-
 static int libowl_get_epoch(struct libowl* owl, double* epoch)
 {
 	int r = 0;
@@ -614,7 +603,6 @@ int libowl_update(struct libowl* owl)
 	if (owl == NULL || !is_write(owl))
 		return -EINVAL;
 
-	int sensors_updated = 0;
 	struct timespec time_now;
 	int r = owl->monotonic(&time_now, owl->monotonic_priv);
 	if (r != 0)
@@ -654,35 +642,35 @@ int libowl_update(struct libowl* owl)
 		owl->buf_pos++;
 	}
 
-	/* Calculate next time of buffer write to disk */
-	calc_buffer_timer(&time_now, &owl->buffer_duration, &owl->buffer_end);
+	/* Check whether to buffer data if available */
+	if (owl->buf_pos > 0) {
+		/* calculate buffer period unless already started */
+		if (owl->buffer_end.tv_sec == 0 && owl->buffer_end.tv_nsec == 0)
+			timespec_add(&owl->buffer_end, &time_now, &owl->buffer_duration);
 
-	/* Check if time to write */
-	if (timespec_cmp(&owl->buffer_end, &time_now) <= 0) {
-		if (owl->buffer_duration.tv_sec > 0 || owl->buffer_duration.tv_nsec > 0)
-			pr_dbg(owl, "write buffer\n");
-		size_t cur = 0;
-		while (cur < owl->buf_pos) {
-			r = libowl_sensor_push(owl, &owl->buf[cur]);
-			if (r != 0)
-				break;
-			cur++;
-			sensors_updated++;
+		/* Check if time to write */
+		if (timespec_cmp(&owl->buffer_end, &time_now) <= 0) {
+			if (owl->buffer_duration.tv_sec > 0 || owl->buffer_duration.tv_nsec > 0)
+				pr_dbg(owl, "write buffer\n");
+
+			size_t written = 0;
+			r = libowl_sensor_push(owl, owl->buf, owl->buf_pos, &written);
+			/* move non written data to start of buffer */
+			if (written > 0 && written < owl->buf_pos)
+				memmove(owl->buf, &owl->buf[written], sizeof(owl->buf[0]) * (owl->buf_pos - written));
+			owl->buf_pos -= written;
+			/* reset buffer timer if all entries were written */
+			if (owl->buf_pos == 0) {
+				owl->buffer_end.tv_sec = 0;
+				owl->buffer_end.tv_nsec = 0;
+			}
+			if (r < 0)
+				return r;
+			return written > INT_MAX ? INT_MAX : (int) written;
 		}
-		/* move non-written data to start of buffer */
-		if (cur > 0 && cur < owl->buf_pos)
-			memmove(owl->buf, &owl->buf[cur], sizeof(owl->buf[0]) * (owl->buf_pos - cur));
-		owl->buf_pos -= cur;
-		if (r == 0) {
-			/* mark buffer as completely written */
-			owl->buffer_end.tv_sec = 0;
-			owl->buffer_end.tv_nsec = 0;
-		}
-		if (r < 0)
-			return r;
 	}
 
-	return sensors_updated;
+	return 0;
 }
 
 int libowl_update_delay(const struct libowl* owl)

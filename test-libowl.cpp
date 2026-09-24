@@ -274,5 +274,65 @@ TEST_CASE("libowl_read") {
 		REQUIRE(libowl_filter_name(&filter, LIBOWL_OP_GREATER_THAN, test.data[2].name) == 0);
 		REQUIRE(libowl_read(owl, 0, &filter, 1, &test.data[3], 1) == 0);
 	}
+}
 
+TEST_CASE("buffer_duration") {
+	/* Prepare database */
+	struct libowl *owl = nullptr;
+	REQUIRE(libowl_open(&owl, "file::memory:?cache=shared", LIBOWL_OPEN_WRITE) == 0);
+	auto at_exit = std::unique_ptr<struct libowl, Deleter>(owl);
+	int time_ms = 0;
+	REQUIRE(libowl_set_monotonic(owl, monotonic, &time_ms) == 0);
+
+	/* Add one sensor */
+	int sensor1_value = 10;
+	REQUIRE(libowl_add_sensor(owl, LIBOWL_SENSOR_TEMP, "sensor1", 0, &dummy_ops, 10, &sensor1_value) == 0);
+
+	/* enable buffering, 1000ms */
+	libowl_set_buffer_duration(owl, 1000);
+
+	/* Add three readings to buffer */
+	const int count = 3;
+	for (int i = 0; i < count; ++i) {
+		time_ms += 10;
+		REQUIRE(libowl_update(owl) == 0);
+	}
+
+	SECTION("buffer reset") {
+		libowl_set_buffer_duration(owl, 0);
+		REQUIRE(libowl_update(owl) == count);
+	}
+
+	SECTION("normal operation") {
+		/* write buffer and one more entry */
+		time_ms += 1000;
+		REQUIRE(libowl_update(owl) == count + 1);
+
+		/* buffer timer should not be started as sensor is not ready for reading */
+		time_ms += 5;
+		REQUIRE(libowl_update(owl) == 0);
+		/* start timer and read to buffer */
+		time_ms += 5;
+		REQUIRE(libowl_update(owl) == 0);
+		/* still buffering */
+		time_ms += 990;
+		REQUIRE(libowl_update(owl) == 0);
+		/* new reading and write buffer */
+		time_ms += 10;
+		REQUIRE(libowl_update(owl) == 3);
+
+		/* buffer 5s */
+		libowl_set_buffer_duration(owl, 5);
+		/* do not start buffer counter due to no reading */
+		REQUIRE(libowl_update(owl) == 0);
+		/* time to read 1 sensor to buffer */
+		time_ms += 10;
+		REQUIRE(libowl_update(owl) == 0);
+		/* no update */
+		time_ms += 4;
+		REQUIRE(libowl_update(owl) == 0);
+		/* write buffer */
+		time_ms += 1;
+		REQUIRE(libowl_update(owl) == 1);
+	}
 }
