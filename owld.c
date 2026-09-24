@@ -110,6 +110,12 @@ static int iio_read(int* value, void* priv)
 				-r, strerror(-r));
 		return r;
 	}
+	/* check if scale is available */
+	double scale = 0.0;
+	r = iio_channel_attr_read_double(data->chan, "scale", &scale);
+	if (r == 0)
+		attr = (long long) ((double) attr * scale);
+
 	if (attr > INT_MAX || attr < INT_MIN)
 		return -ERANGE;
 	*value = (int) attr;
