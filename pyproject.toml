@@ -1,0 +1,6 @@
+[tool.setuptools]
+py-modules = ["libowl"]
+
+[project]
+name = "libowl"
+version = "0.0"
