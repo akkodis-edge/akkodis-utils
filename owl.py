@@ -119,10 +119,7 @@ class LibOwl:
                 processed_data = ret
         finally:
             for data in c_data_array[:processed_data]:
-                type = 'UNKNOWN'
-                if data.type == SENSOR_TEMPERATURE:
-                    type = 'TEMP'
-                out.append((data.name.decode('utf-8'), data.epoch, type, data.value))
+                out.append((data.name.decode('utf-8'), data.epoch, data.type, data.value))
                 self.lib.libowl_sensor_data_free(byref(data))
         return out
 
@@ -144,7 +141,7 @@ def main():
         for name, epoch, type, value in data:
             next_epoch = epoch
             datestr = datetime.fromtimestamp(epoch, timezone.utc)
-            print('[{}] ({}) {}: {}'.format(datestr, type, name, value))
+            print('[{}] ({}) {}: {}'.format(datestr, sensor_type_name.get(type, 'UNKNOWN'), name, value))
 
         if not data:
             time.sleep(0.1)
