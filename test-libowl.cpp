@@ -199,8 +199,8 @@ TEST_CASE("libowl_read") {
 	int sensor2_value = 20;
 	int sensor3_value = 30;
 	REQUIRE(libowl_add_sensor(owl, LIBOWL_SENSOR_TEMP, "sensor1", 0, &dummy_ops, 0, &sensor1_value) == 0);
-	REQUIRE(libowl_add_sensor(owl, LIBOWL_SENSOR_TEMP, "sensor2", 0, &dummy_ops, 0, &sensor2_value) == 0);
-	REQUIRE(libowl_add_sensor(owl, LIBOWL_SENSOR_TEMP, "sensor3", 0, &dummy_ops, 0, &sensor3_value) == 0);
+	REQUIRE(libowl_add_sensor(owl, LIBOWL_SENSOR_VOLTAGE, "sensor2", 0, &dummy_ops, 0, &sensor2_value) == 0);
+	REQUIRE(libowl_add_sensor(owl, LIBOWL_SENSOR_CURRENT, "sensor3", 0, &dummy_ops, 0, &sensor3_value) == 0);
 
 	/* Add one reading for each sensor at three separate points in time */
 	REQUIRE(libowl_update(owl) == 3);
@@ -221,14 +221,14 @@ TEST_CASE("libowl_read") {
 	/* expected data in database */
 	const struct libowl_sensor_data expected[database_size] = {
 		{"sensor1", 1, 0.0, LIBOWL_SENSOR_TEMP, 10},
-		{"sensor2", 2, 0.0, LIBOWL_SENSOR_TEMP, 20},
-		{"sensor3", 3, 0.0, LIBOWL_SENSOR_TEMP, 30},
+		{"sensor2", 2, 0.0, LIBOWL_SENSOR_VOLTAGE, 20},
+		{"sensor3", 3, 0.0, LIBOWL_SENSOR_CURRENT, 30},
 		{"sensor1", 4, 10.0, LIBOWL_SENSOR_TEMP, 11},
-		{"sensor2", 5, 10.0, LIBOWL_SENSOR_TEMP, 21},
-		{"sensor3", 6, 10.0, LIBOWL_SENSOR_TEMP, 31},
+		{"sensor2", 5, 10.0, LIBOWL_SENSOR_VOLTAGE, 21},
+		{"sensor3", 6, 10.0, LIBOWL_SENSOR_CURRENT, 31},
 		{"sensor1", 7, 20.0, LIBOWL_SENSOR_TEMP, 12},
-		{"sensor2", 8, 20.0, LIBOWL_SENSOR_TEMP, 22},
-		{"sensor3", 9, 20.0, LIBOWL_SENSOR_TEMP, 32},
+		{"sensor2", 8, 20.0, LIBOWL_SENSOR_VOLTAGE, 22},
+		{"sensor3", 9, 20.0, LIBOWL_SENSOR_CURRENT, 32},
 	};
 
 	SECTION("Filter by index -- all") {
@@ -312,6 +312,28 @@ TEST_CASE("libowl_read") {
 		REQUIRE(libowl_filter_name(&filter, LIBOWL_OP_GREATER_THAN, test.data[2].name) == 0);
 		REQUIRE(libowl_read(owl, 0, &filter, 1, &test.data[3], 1) == 0);
 	}
+
+	SECTION("Filter by type -- all") {
+		struct test_data test;
+		auto cleanup = prepare_data(&test, database_size + 1);
+		struct libowl_filter filter;
+		REQUIRE(libowl_filter_type(&filter, LIBOWL_OP_GREATER_EQUAL, LIBOWL_SENSOR_TEMP) == 0);
+		REQUIRE(libowl_read(owl, 0, &filter, 1, test.data, test.size) == 9);
+		for (size_t i = 0; i < database_size; ++i)
+			sensor_data_equal(&test.data[i], &expected[i]);
+	}
+
+	SECTION("Filter by type -- voltage") {
+		struct test_data test;
+		auto cleanup = prepare_data(&test, database_size + 1);
+		struct libowl_filter filter;
+		REQUIRE(libowl_filter_type(&filter, LIBOWL_OP_EQUAL, LIBOWL_SENSOR_VOLTAGE) == 0);
+		REQUIRE(libowl_read(owl, 0, &filter, 1, test.data, test.size) == 3);
+		sensor_data_equal(&test.data[0], &expected[1]);
+		sensor_data_equal(&test.data[1], &expected[4]);
+		sensor_data_equal(&test.data[2], &expected[7]);
+	}
+
 }
 
 TEST_CASE("buffer_duration") {

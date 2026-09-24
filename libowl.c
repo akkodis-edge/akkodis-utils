@@ -725,6 +725,16 @@ int libowl_filter_name(struct libowl_filter* filter, int op, const char* name)
 	return 0;
 }
 
+int libowl_filter_type(struct libowl_filter* filter, int op, int type)
+{
+	if (op > LIBOWL_OP_EQUAL || libowl_sensor_type_str(type) == NULL)
+		return -EINVAL;
+	filter->type = LIBOWL_FILTER_TYPE;
+	filter->op = op;
+	filter->data.mint = type;
+	return 0;
+}
+
 static const char* op_to_str(int op)
 {
 	switch (op) {
@@ -760,6 +770,11 @@ static int filter_to_statement_and_bind(const struct libowl_filter* filter, size
 		bind->type = BIND_TEXT;
 		bind->data.str = filter->data.str;
 		field = "S.name";
+		break;
+	case LIBOWL_FILTER_TYPE:
+		bind->type = BIND_INT;
+		bind->data.integer = filter->data.mint;
+		field = "S.type_id";
 		break;
 	default:
 		return -EINVAL;
@@ -813,7 +828,7 @@ int libowl_read(struct libowl* owl, int flags, const struct libowl_filter* filte
 	parts[0].str =
 		"SELECT "
 			"A.id,"
-			"(SELECT name from category_type WHERE id = S.type_id),"
+			"S.type_id,"
 			"S.name,"
 			"A.value,"
 			"A.epoch"
@@ -863,7 +878,7 @@ int libowl_read(struct libowl* owl, int flags, const struct libowl_filter* filte
 			break;
 		case SQLITE_ROW:
 			data[pos].index = sqlite3_column_int64(stmt, 0);
-			data[pos].type = libowl_sensor_type_int((const char*) sqlite3_column_text(stmt, 1));
+			data[pos].type = sqlite3_column_int(stmt, 1);
 			data[pos].name = strdup((const char*) sqlite3_column_text(stmt, 2));
 			data[pos].value = sqlite3_column_int64(stmt, 3);
 			data[pos].epoch = sqlite3_column_double(stmt, 4);

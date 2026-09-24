@@ -85,6 +85,7 @@ enum libowl_sensor_filter_type {
 	LIBOWL_FILTER_EPOCH,
 	LIBOWL_FILTER_INDEX,
 	LIBOWL_FILTER_NAME,
+	LIBOWL_FILTER_TYPE,
 };
 enum libowl_sensor_filter_op {
 	LIBOWL_OP_GREATER_THAN,
@@ -100,6 +101,7 @@ struct libowl_filter {
 		double mdouble;
 		int64_t mi64;
 		const char *str;
+		int mint;
 	} data;
 };
 
@@ -108,6 +110,7 @@ struct libowl_filter {
 int libowl_filter_epoch(struct libowl_filter* filter, int op, double epoch);
 int libowl_filter_index(struct libowl_filter* filter, int op, int64_t index);
 int libowl_filter_name(struct libowl_filter* filter, int op, const char* name);
+int libowl_filter_type(struct libowl_filter* filter, int op, int type);
 
 /* Read from libowl based on "filters" of "filter_size" into "data" of "size".
  *
