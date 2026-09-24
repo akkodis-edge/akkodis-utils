@@ -31,6 +31,8 @@ class LibOwlFilter(Structure):
         ('data', LibOwlFilterData)]
 
 SENSOR_TEMPERATURE = 0
+SENSOR_VOLTAGE = 1
+SENSOR_CURRENT = 2
 LIBOWL_OP_GREATER_THAN = 0
 LIBOWL_OP_GREATER_EQUAL = 1
 LIBOWL_OP_LESS_THAN = 2
@@ -39,6 +41,8 @@ LIBOWL_OP_EQUAL = 4
 
 sensor_type_name = {
     SENSOR_TEMPERATURE: 'TEMP',
+    SENSOR_VOLTAGE: 'VOLTAGE',
+    SENSOR_CURRENT: 'CURRENT',
 }
 
 class LibOwl:
@@ -77,11 +81,12 @@ class LibOwl:
                 self.lib.libowl_sensor_data_free(byref(c_data_array[0]))
         return sensors
 
-    def read(self, limit, after=None, before=None, name=None):
+    def read(self, limit, after=None, before=None, name=None, type=None):
         # limit: maximum numbero of readings
         # after: return readings AFTER this epoch value
         # before: return readings BEFORE this epoch value
         # name: return readings for name
+        # type: return readings of type
 
         # create filters
         filters = []
@@ -91,6 +96,8 @@ class LibOwl:
             filters.append((self.lib.libowl_filter_epoch, c_int(LIBOWL_OP_LESS_THAN), c_double(before)))
         if name != None:
             filters.append((self.lib.libowl_filter_name, c_int(LIBOWL_OP_EQUAL), c_char_p(name.encode('utf-8'))))
+        if type != None:
+            filters.append((self.lib.libowl_filter_type, c_int(LIBOWL_OP_EQUAL), c_int(type)))
         c_filter_array_type = LibOwlFilter * len(filters)
         c_filter_array = c_filter_array_type()
         for index, (func, op, value) in enumerate(filters):
