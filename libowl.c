@@ -115,68 +115,189 @@ static void mprint(FILE* stream, const char* fmt, ...)
 	if (owl->loglevel >= LIBOWL_LOGLEVEL_DEBUG) \
 		{mprint(stderr, "libowl: dbg: " fmt, ##__VA_ARGS__);}
 
-static int libowl_single_step(struct libowl* owl, const char* statement)
+enum bind_type {
+	BIND_IGNORE,
+	BIND_TEXT,
+	BIND_INT,
+	BIND_INT64,
+	BIND_DOUBLE,
+};
+
+struct libowl_bind {
+	int col;
+	enum bind_type type;
+	union {
+		const char *str;
+		int integer;
+		double dbl;
+		int64_t i64;
+	} data;
+};
+
+#define ARRAY_SIZE(x) (sizeof(x) / sizeof((x)[0]))
+
+static int libowl_stmt_col(struct libowl* owl, struct sqlite3_stmt* stmt, struct libowl_bind* bind, size_t size)
+{
+	for (size_t i = 0; i < size; ++i) {
+		switch (bind[i].type) {
+		case BIND_TEXT:
+			if (sqlite3_column_type(stmt, bind[i].col) != SQLITE_TEXT)
+				return -EBADF;
+			bind[i].data.str = (const char*) sqlite3_column_text(stmt, bind[i].col);
+			if (bind[i].data.str == NULL && sqlite3_errcode(owl->db) != SQLITE_OK)
+				return -EBADF;
+			break;
+		case BIND_INT:
+			if (sqlite3_column_type(stmt, bind[i].col) != SQLITE_INTEGER)
+				return -EBADF;
+			bind[i].data.integer = sqlite3_column_int(stmt, bind[i].col);
+			break;
+		case BIND_INT64:
+			if (sqlite3_column_type(stmt, bind[i].col) != SQLITE_INTEGER)
+				return -EBADF;
+			bind[i].data.i64 = sqlite3_column_int64(stmt, bind[i].col);
+			break;
+		case BIND_DOUBLE:
+			if (sqlite3_column_type(stmt, bind[i].col) != SQLITE_FLOAT)
+				return -EBADF;
+			bind[i].data.dbl = sqlite3_column_double(stmt, bind[i].col);
+			break;
+		case BIND_IGNORE:
+			break;
+		default:
+			pr_err(owl, "Invalid sqlite3 col: %d\n");
+			return -EBADF;
+		}
+	}
+	return 0;
+}
+
+static int libowl_stmt_bind(struct libowl* owl, struct sqlite3_stmt* stmt, const struct libowl_bind* bind, size_t size)
+{
+	int r = SQLITE_OK;
+	for (size_t i = 0; i < size; ++i) {
+		switch (bind[i].type) {
+		case BIND_TEXT:
+			r = sqlite3_bind_text(stmt, bind[i].col, bind[i].data.str, -1, SQLITE_STATIC);
+			if (r != SQLITE_OK) {
+				pr_err(owl, "sqlite3_bind_text() [%d]: %s\n", r, sqlite3_errstr(r));
+				goto exit;
+			}
+			break;
+		case BIND_INT:
+			r = sqlite3_bind_int(stmt, bind[i].col, bind[i].data.integer);
+			if (r != SQLITE_OK) {
+				pr_err(owl, "sqlite3_bind_int() [%d]: %s\n", r, sqlite3_errstr(r));
+				goto exit;
+			}
+			break;
+		case BIND_INT64:
+			r = sqlite3_bind_int64(stmt, bind[i].col, bind[i].data.i64);
+			if (r != SQLITE_OK) {
+				pr_err(owl, "sqlite3_bind_int64() [%d]: %s\n", r, sqlite3_errstr(r));
+				goto exit;
+			}
+			break;
+		case BIND_DOUBLE:
+			r = sqlite3_bind_double(stmt, bind[i].col, bind[i].data.dbl);
+			if (r != SQLITE_OK) {
+				pr_err(owl, "sqlite3_bind_double() [%d]: %s\n", r, sqlite3_errstr(r));
+				goto exit;
+			}
+			break;
+		case BIND_IGNORE:
+			break;
+		default:
+			pr_err(owl, "Invalid sqlite3 bind: %d\n");
+			r = SQLITE_ERROR;
+			goto exit;
+		}
+	}
+exit:
+	return r == SQLITE_OK ? 0 : -EBADF;
+}
+
+static sqlite3_stmt* libowl_prepare_bind(struct libowl* owl, const char* sql, const struct libowl_bind* bind, size_t size)
 {
 	sqlite3_stmt *stmt = NULL;
-	int r = sqlite3_prepare_v2(owl->db, statement, -1, &stmt, NULL);
+	int r = sqlite3_prepare_v2(owl->db, sql, -1, &stmt, NULL);
+	if (r != SQLITE_OK) {
+		pr_err(owl, "sqlite3_prepare_v2() [%d]: %s\n", r, sqlite3_errstr(r));
+		goto exit;
+	}
+
+	r = libowl_stmt_bind(owl, stmt, bind, size);
+	if (r != 0) {
+		r = SQLITE_ERROR;
+		goto exit;
+	}
+
+	r = SQLITE_OK;
+exit:
+	if (r != SQLITE_OK) {
+		sqlite3_finalize(stmt);
+		stmt = NULL;
+	}
+	return stmt;
+}
+
+static sqlite3_stmt* libowl_single(struct libowl* owl, const char* sql, const struct libowl_bind* input, size_t input_size, struct libowl_bind* output, size_t output_size)
+{
+	sqlite3_stmt *stmt = NULL;
+	int r = sqlite3_prepare_v2(owl->db, sql, -1, &stmt, NULL);
 	if (r != SQLITE_OK) {
 		pr_err(owl, "sqlite3_prepare_v2() [%d]: %s\n", r, sqlite3_errstr(r));
 		r = -EBADF;
 		goto exit;
 	}
 
+	if (input != NULL && input_size > 0) {
+		r = libowl_stmt_bind(owl, stmt, input, input_size);
+		if (r != 0)
+			goto exit;
+	}
+
 	r = sqlite3_step(stmt);
-	if (r != SQLITE_DONE) {
+	if (r != SQLITE_DONE && r != SQLITE_ROW) {
 		pr_err(owl, "sqlite3_step() [%d]: %s\n", r, sqlite3_errstr(r));
 		r = -EBADF;
 		goto exit;
 	}
+	if (output != NULL && output_size > 0) {
+		r = libowl_stmt_col(owl, stmt, output, output_size);
+		if (r != 0) {
+			pr_err(owl, "failed reading statement values\n");
+			goto exit;
+		}
+	}
 
 	r = 0;
 exit:
-	if (stmt != NULL)
-		sqlite3_finalize(stmt);
-	return r;
+	if (r != 0) {
+		if (stmt != NULL)
+			sqlite3_finalize(stmt);
+		stmt = NULL;
+	}
+	return stmt;
 }
 
-static int libowl_pragma(struct libowl* owl)
+static int libowl_single_simple(struct libowl* owl, const char* sql)
 {
-	sqlite3_stmt *stmt = NULL;
-	int r = sqlite3_prepare_v2(owl->db,
-		" PRAGMA journal_mode = DELETE;"
-		" PRAGMA foreign_keys = ON;",
-		-1, &stmt, NULL);
-	if (r != SQLITE_OK) {
-		pr_err(owl, "sqlite3_prepare_v2(pragma) [%d]: %s\n", r, sqlite3_errstr(r));
-		r = -EBADF;
-		goto exit;
-	}
-
-	while (1) {
-		r = sqlite3_step(stmt);
-		if (r == SQLITE_DONE)
-			break;
-		if (r == SQLITE_ROW)
-			continue;
-		pr_err(owl, "sqlite3_step(pragma) [%d]: %s\n", r, sqlite3_errstr(r));
-		r = -EBADF;
-		goto exit;
-	}
-
-	r = 0;
-exit:
-	if (stmt != NULL)
-		sqlite3_finalize(stmt);
-	return r;
+	sqlite3_stmt *stmt = libowl_single(owl, sql, NULL, 0, NULL, 0);
+	sqlite3_finalize(stmt);
+	return stmt == NULL ? -EBADF : 0;
 }
 
 static int libowl_init_database(struct libowl* owl)
 {
-	int r = libowl_pragma(owl);
+	int r = libowl_single_simple(owl, "PRAGMA journal_mode = DELETE");
+	if (r != 0)
+		return r;
+	r = libowl_single_simple(owl, "PRAGMA foreign_keys = ON");
 	if (r != 0)
 		return r;
 
-	r = libowl_single_step(owl,
+	r = libowl_single_simple(owl,
 		"CREATE TABLE IF NOT EXISTS sensors("
 				"id INTEGER PRIMARY KEY,"
 				"type_id INTEGER NOT NULL CHECK(type_id >= 0),"
@@ -186,7 +307,7 @@ static int libowl_init_database(struct libowl* owl)
 	if (r != 0)
 		return r;
 
-	r = libowl_single_step(owl,
+	r = libowl_single_simple(owl,
 		"CREATE TABLE IF NOT EXISTS data("
 				"id INTEGER PRIMARY KEY,"
 				"sensor_id INTEGER NOT NULL,"
@@ -304,96 +425,6 @@ int libowl_set_monotonic(struct libowl* owl, int (*monotonic)(struct timespec*, 
 	return 0;
 }
 
-enum bind_type {
-	BIND_IGNORE,
-	BIND_TEXT,
-	BIND_INT,
-	BIND_INT64,
-	BIND_DOUBLE,
-};
-
-struct libowl_bind {
-	int col;
-	enum bind_type type;
-	union {
-		const char *str;
-		int integer;
-		double dbl;
-		int64_t i64;
-	} data;
-};
-
-#define ARRAY_SIZE(x) (sizeof(x) / sizeof((x)[0]))
-
-static int libowl_stmt_bind(struct libowl* owl, struct sqlite3_stmt* stmt, const struct libowl_bind* bind, size_t size)
-{
-	int r = SQLITE_MISUSE;
-	for (size_t i = 0; i < size; ++i) {
-		switch (bind[i].type) {
-		case BIND_TEXT:
-			r = sqlite3_bind_text(stmt, bind[i].col, bind[i].data.str, -1, SQLITE_STATIC);
-			if (r != SQLITE_OK) {
-				pr_err(owl, "sqlite3_bind_text() [%d]: %s\n", r, sqlite3_errstr(r));
-				goto exit;
-			}
-			break;
-		case BIND_INT:
-			r = sqlite3_bind_int(stmt, bind[i].col, bind[i].data.integer);
-			if (r != SQLITE_OK) {
-				pr_err(owl, "sqlite3_bind_int() [%d]: %s\n", r, sqlite3_errstr(r));
-				goto exit;
-			}
-			break;
-		case BIND_INT64:
-			r = sqlite3_bind_int64(stmt, bind[i].col, bind[i].data.i64);
-			if (r != SQLITE_OK) {
-				pr_err(owl, "sqlite3_bind_int64() [%d]: %s\n", r, sqlite3_errstr(r));
-				goto exit;
-			}
-			break;
-		case BIND_DOUBLE:
-			r = sqlite3_bind_double(stmt, bind[i].col, bind[i].data.dbl);
-			if (r != SQLITE_OK) {
-				pr_err(owl, "sqlite3_bind_double() [%d]: %s\n", r, sqlite3_errstr(r));
-				goto exit;
-			}
-			break;
-		case BIND_IGNORE:
-			break;
-		default:
-			pr_err(owl, "Invalid sqlite3 bind: %d\n");
-			r = SQLITE_ERROR;
-			goto exit;
-		}
-	}
-exit:
-	return r == SQLITE_OK ? 0 : -EBADF;
-}
-
-static sqlite3_stmt* libowl_prepare_bind(struct libowl* owl, const char* sql, const struct libowl_bind* bind, size_t size)
-{
-	sqlite3_stmt *stmt = NULL;
-	int r = sqlite3_prepare_v2(owl->db, sql, -1, &stmt, NULL);
-	if (r != SQLITE_OK) {
-		pr_err(owl, "sqlite3_prepare_v2() [%d]: %s\n", r, sqlite3_errstr(r));
-		goto exit;
-	}
-
-	r = libowl_stmt_bind(owl, stmt, bind, size);
-	if (r != 0) {
-		r = SQLITE_ERROR;
-		goto exit;
-	}
-
-	r = SQLITE_OK;
-exit:
-	if (r != SQLITE_OK) {
-		sqlite3_finalize(stmt);
-		stmt = NULL;
-	}
-	return stmt;
-}
-
 int libowl_add_sensor(struct libowl* owl, int type, const char* name, int flags, const struct libowl_sensor_ops* ops, int interval_ms, void* priv)
 {
 	if (owl == NULL || !is_write(owl) || libowl_sensor_type_str(type) == NULL || name == NULL || name[0] == '\0' || ops == NULL || interval_ms < 0)
@@ -481,7 +512,7 @@ static int libowl_sensor_push(struct libowl* owl, const struct libowl_sensor_dat
 {
 	sqlite3_stmt *stmt = NULL;
 	/* Explictly start write transaction to avoid autocommit for each sqlite3_step() call */
-	int r = libowl_single_step(owl, "BEGIN IMMEDIATE");
+	int r = libowl_single_simple(owl, "BEGIN IMMEDIATE");
 	if (r != 0)
 		goto exit;
 
@@ -523,7 +554,7 @@ static int libowl_sensor_push(struct libowl* owl, const struct libowl_sensor_dat
 		written_entries++;
 	}
 	/* commit explicitly started transaction */
-	r = libowl_single_step(owl, "COMMIT");
+	r = libowl_single_simple(owl, "COMMIT");
 	if (r != 0)
 		goto exit;
 
@@ -534,7 +565,7 @@ exit:
 		sqlite3_finalize(stmt);
 	/* Rollback if transcation on-going. On success should have been closed by COMMIT */
 	if (sqlite3_txn_state(owl->db, NULL) >= SQLITE_TXN_WRITE) {
-		const int res = libowl_single_step(owl, "ROLLBACK");
+		const int res = libowl_single_simple(owl, "ROLLBACK");
 		if (r == 0)
 			r = res;
 	}
