@@ -425,6 +425,90 @@ int libowl_set_monotonic(struct libowl* owl, int (*monotonic)(struct timespec*, 
 	return 0;
 }
 
+int64_t libowl_get_size_impl(struct libowl* owl, const char* page_count_statement)
+{
+	struct libowl_bind bind_int64 = {
+		.col = 0, .type = BIND_INT64
+	};
+
+	sqlite3_stmt *stmt = libowl_single(owl, "PRAGMA page_size;", NULL, 0, &bind_int64, 1);
+	if (stmt == NULL)
+		return -EBADF;
+	const int64_t page_size = bind_int64.data.i64;
+	sqlite3_finalize(stmt);
+
+	stmt = libowl_single(owl, page_count_statement, NULL, 0, &bind_int64, 1);
+	if (stmt == NULL)
+		return -EBADF;
+	const int64_t page_count = bind_int64.data.i64;
+	sqlite3_finalize(stmt);
+
+	if (page_size < 1 || page_count < 0)
+		return -EBADF;
+	if ((INT64_MAX / page_size) < page_count)
+		return -ERANGE;
+	return page_size * page_count;
+}
+
+int64_t libowl_get_size(struct libowl* owl)
+{
+	return libowl_get_size_impl(owl, "PRAGMA page_count;");
+}
+
+int64_t libowl_get_maximum_size(struct libowl* owl)
+{
+	return libowl_get_size_impl(owl, "PRAGMA max_page_count;");
+}
+
+int64_t libowl_get_minimum_size(struct libowl* owl)
+{
+	return libowl_get_size_impl(owl, "SELECT 4");
+}
+
+int64_t libowl_set_maximum_size(struct libowl* owl, int64_t bytes)
+{
+	if (bytes < libowl_get_minimum_size(owl))
+		return -EINVAL;
+
+	int r = 0;
+
+	struct libowl_bind bind_int64 = {
+		.col = 0, .type = BIND_INT64
+	};
+	sqlite3_stmt *stmt = libowl_single(owl, "PRAGMA page_size;", NULL, 0, &bind_int64, 1);
+	if (stmt == NULL)
+		return -EBADF;
+	const int64_t page_size = bind_int64.data.i64;
+	sqlite3_finalize(stmt);
+
+	/* calculate number of pages */
+	if (page_size < 1)
+		return -EBADF;
+	int64_t requested_max_page_count = bytes / page_size;
+	/* round up bytes to full pages */
+	if (bytes % page_size)
+		requested_max_page_count++;
+
+	/* Write value */
+	const int buf_size = 128;
+	char buf[buf_size];
+	r = snprintf(buf, buf_size, "PRAGMA max_page_count=%" PRId64 ";", requested_max_page_count);
+	if (r < 0 || r >= buf_size)
+		return -EBADF;
+	stmt = libowl_single(owl, buf, NULL, 0, &bind_int64, 1);
+	if (stmt == NULL)
+		return -EBADF;
+	const int64_t max_page_count = bind_int64.data.i64;
+	sqlite3_finalize(stmt);
+
+	if (max_page_count < 1)
+		return -EBADF;
+	if ((INT64_MAX / page_size) < max_page_count)
+		return -ERANGE;
+
+	return max_page_count * page_size;
+}
+
 int libowl_add_sensor(struct libowl* owl, int type, const char* name, int flags, const struct libowl_sensor_ops* ops, int interval_ms, void* priv)
 {
 	if (owl == NULL || !is_write(owl) || libowl_sensor_type_str(type) == NULL || name == NULL || name[0] == '\0' || ops == NULL || interval_ms < 0)

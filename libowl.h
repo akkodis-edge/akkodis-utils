@@ -36,8 +36,20 @@ void libowl_set_loglevel(struct libowl* owl, int loglevel);
  * buffer has been cleared first set buffer duration to 0
  * and call libowl_update(). */
 void libowl_set_buffer_duration(struct libowl* owl, int duration_ms);
-/*
- * Set monotonic clock implementation. Allows replacing default monotonic clock
+
+/* Get size of database in bytes. Returns negative errno on error. */
+int64_t libowl_get_size(struct libowl* owl);
+/* Get minimum size of database in bytes. Returns negative errno on error. */
+int64_t libowl_get_minimum_size(struct libowl* owl);
+/* Get maximum size of database in bytes. Returns negative errno on error. */
+int64_t libowl_get_maximum_size(struct libowl* owl);
+/* Set maximum database size in bytes. A value lower than libowl_get_minimum_size()
+ * will return -EINVAL.
+ * Size will be rounded up by page size.
+ * Returns the set maximum size on success or negative errno for error. */
+int64_t libowl_set_maximum_size(struct libowl* owl, int64_t bytes);
+
+/* Set monotonic clock implementation. Allows replacing default monotonic clock
  * implementation with external function. */
 int libowl_set_monotonic(struct libowl* owl, int (*monotonic)(struct timespec*, void*), void* monotonic_priv);
 
