@@ -120,14 +120,14 @@ static int libowl_single_step(struct libowl* owl, const char* statement)
 	sqlite3_stmt *stmt = NULL;
 	int r = sqlite3_prepare_v2(owl->db, statement, -1, &stmt, NULL);
 	if (r != SQLITE_OK) {
-		pr_err(owl, "sqlite3_prepare_v2(create_table) [%d]: %s\n", r, sqlite3_errstr(r));
+		pr_err(owl, "sqlite3_prepare_v2() [%d]: %s\n", r, sqlite3_errstr(r));
 		r = -EBADF;
 		goto exit;
 	}
 
 	r = sqlite3_step(stmt);
 	if (r != SQLITE_DONE) {
-		pr_err(owl, "sqlite3_step(create_table) [%d]: %s\n", r, sqlite3_errstr(r));
+		pr_err(owl, "sqlite3_step() [%d]: %s\n", r, sqlite3_errstr(r));
 		r = -EBADF;
 		goto exit;
 	}
@@ -480,7 +480,12 @@ static char* join_statement(const struct libowl_statement_part* parts, size_t si
 static int libowl_sensor_push(struct libowl* owl, const struct libowl_sensor_data* data, size_t size, size_t* written)
 {
 	sqlite3_stmt *stmt = NULL;
-	int r = sqlite3_prepare_v2(owl->db,
+	/* Explictly start write transaction to avoid autocommit for each sqlite3_step() call */
+	int r = libowl_single_step(owl, "BEGIN IMMEDIATE");
+	if (r != 0)
+		goto exit;
+
+	r = sqlite3_prepare_v2(owl->db,
 		"INSERT INTO data(sensor_id, value, epoch) VALUES "
 			"((SELECT id from sensors WHERE type_id=(?) AND name=(?)), (?), (?))",
 		-1, &stmt, NULL);
@@ -491,6 +496,7 @@ static int libowl_sensor_push(struct libowl* owl, const struct libowl_sensor_dat
 	}
 
 	*written = 0;
+	size_t written_entries = 0;
 
 	for (size_t i = 0; i < size; ++i) {
 		const struct libowl_bind bind[] = {
@@ -514,12 +520,25 @@ static int libowl_sensor_push(struct libowl* owl, const struct libowl_sensor_dat
 			r = -EBADF;
 			goto exit;
 		}
-		(*written)++;
+		written_entries++;
 	}
+	/* commit explicitly started transaction */
+	r = libowl_single_step(owl, "COMMIT");
+	if (r != 0)
+		goto exit;
+
+	*written = written_entries;
 	r = 0;
 exit:
 	if (stmt != NULL)
 		sqlite3_finalize(stmt);
+	/* Rollback if transcation on-going. On success should have been closed by COMMIT */
+	if (sqlite3_txn_state(owl->db, NULL) >= SQLITE_TXN_WRITE) {
+		const int res = libowl_single_step(owl, "ROLLBACK");
+		if (r == 0)
+			r = res;
+	}
+
 	return r;
 }
 
