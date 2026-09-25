@@ -200,6 +200,34 @@ static int libowl_init_database(struct libowl* owl)
 	return 0;
 }
 
+int libowl_close(struct libowl* owl)
+{
+	int r = 0;
+	if (owl == NULL)
+		return -EINVAL;
+	if (owl->db != NULL) {
+		r = sqlite3_close(owl->db);
+		if (r != SQLITE_OK)
+			return -EBUSY;
+		owl->db = NULL;
+	}
+	if (owl->sensors != NULL) {
+		for (size_t i = 0; i < owl->sensors_size; ++i) {
+			if (owl->sensors[i].name != NULL)
+				free(owl->sensors[i].name);
+			if (owl->sensors[i].priv != NULL
+					&& (owl->sensors[i].flags & LIBOWL_SENSOR_FREE_PRIV) == LIBOWL_SENSOR_FREE_PRIV)
+				free(owl->sensors[i].priv);
+		}
+		free(owl->sensors);
+		owl->sensors = NULL;
+	}
+	if (owl->buf != NULL)
+		free(owl->buf);
+	free(owl);
+	return 0;
+}
+
 int libowl_open(struct libowl** owl, const char* path, int flags)
 {
 	if (owl == NULL || *owl != NULL || path == NULL)
@@ -244,7 +272,7 @@ int libowl_open(struct libowl** owl, const char* path, int flags)
 	r = 0;
 exit:
 	if (newowl != NULL)
-		free(newowl);
+		libowl_close(newowl);
 	return r;
 }
 
@@ -273,34 +301,6 @@ int libowl_set_monotonic(struct libowl* owl, int (*monotonic)(struct timespec*, 
 		return -EINVAL;
 	owl->monotonic = monotonic;
 	owl->monotonic_priv = monotonic_priv;
-	return 0;
-}
-
-int libowl_close(struct libowl* owl)
-{
-	int r = 0;
-	if (owl == NULL)
-		return -EINVAL;
-	if (owl->db != NULL) {
-		r = sqlite3_close(owl->db);
-		if (r != SQLITE_OK)
-			return -EBUSY;
-		owl->db = NULL;
-	}
-	if (owl->sensors != NULL) {
-		for (size_t i = 0; i < owl->sensors_size; ++i) {
-			if (owl->sensors[i].name != NULL)
-				free(owl->sensors[i].name);
-			if (owl->sensors[i].priv != NULL
-					&& (owl->sensors[i].flags & LIBOWL_SENSOR_FREE_PRIV) == LIBOWL_SENSOR_FREE_PRIV)
-				free(owl->sensors[i].priv);
-		}
-		free(owl->sensors);
-		owl->sensors = NULL;
-	}
-	if (owl->buf != NULL)
-		free(owl->buf);
-	free(owl);
 	return 0;
 }
 
