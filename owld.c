@@ -20,6 +20,8 @@ static void print_usage()
 	printf("  -c/--config:    Config file\n");
 	printf("Optional\n");
 	printf("  --delay         Time in seconds to buffer readings before writing to disk\n");
+	printf("  --maximum       Maximum database size in bytes\n");
+	printf("  --trim          Allow trimming database when full\n");
 	printf("  -h/--help:      This message\n");
 	printf("Returns 0 if OK");
 	printf("\n");
@@ -44,6 +46,8 @@ struct config {
 	struct sensor_config *sensors;
 	size_t sensors_count;
 	int buffer_period_ms;
+	int64_t max_size;
+	int trim;
 };
 
 static const cyaml_strval_t sensor_config_type_strings[] = {
@@ -82,6 +86,8 @@ static const cyaml_schema_field_t config_fields[] = {
 	CYAML_FIELD_SEQUENCE("sensors", CYAML_FLAG_POINTER, struct config, sensors,
 			&sensor_config_schema, 0, CYAML_UNLIMITED),
 	CYAML_FIELD_INT("buffer_period_ms", CYAML_FLAG_OPTIONAL, struct config, buffer_period_ms),
+	CYAML_FIELD_INT("database_maximum_size", CYAML_FLAG_OPTIONAL, struct config, max_size),
+	CYAML_FIELD_BOOL("database_trim", CYAML_FLAG_OPTIONAL, struct config, trim),
 	CYAML_FIELD_END
 };
 
@@ -303,6 +309,8 @@ int main (int argc, char **argv)
 	char *config_path = NULL;
 	int debug = 0;
 	int delay_ms = -1;
+	int64_t maximum = -1;
+	int trim = -1;
 
 	for (int i = 1; i < argc; i++) {
 		if (!strcmp("--database", argv[i]) || !strcmp("-d", argv[i])) {
@@ -333,6 +341,24 @@ int main (int argc, char **argv)
 				return EINVAL;
 			}
 			delay_ms = (int) result * 1000;
+		}
+		else
+		if (!strcmp("--maximum", argv[i])) {
+			if (++i >= argc) {
+				fprintf(stderr, "Invalid --maximum\n");
+				return EINVAL;
+			}
+			char *endptr = NULL;
+			const long long result = strtoll(argv[i], &endptr, 0);
+			if (endptr == NULL || result < 0) {
+				fprintf(stderr, "Invalid --maximum\n");
+				return EINVAL;
+			}
+			maximum = (int64_t) result;
+		}
+		else
+		if (!strcmp("--trim", argv[i])) {
+			trim = 1;
 		}
 		else
 		if (!strcmp("--help", argv[i]) || !strcmp("-h", argv[i])) {
@@ -396,30 +422,58 @@ int main (int argc, char **argv)
 	}
 
 	printf("Database: \"%s\"\n", database_path);
-	/* Get buffer period unless provided on commandline */
-	if (delay_ms < 0)
-		delay_ms = config->buffer_period_ms;
-	if (delay_ms > 0)
-		printf("Buffering: ON (%d ms)\n", delay_ms);
-	else
-		printf("Buffering: OFF\n");
+
+	/* Get open flags */
+	int flags = LIBOWL_OPEN_WRITE;
+	/* Get trim unless provided on commandline */
+	if (trim < 0)
+		trim = config->trim;
+	/* check whether trimming is requested */
+	if (trim > 0)
+		flags |= LIBOWL_ALLOW_TRIM;
+	printf("Trim: %s\n", (flags & LIBOWL_ALLOW_TRIM) == LIBOWL_ALLOW_TRIM ? "ON" : "OFF");
 
 	/* open database */
-	r = libowl_open(&owl, database_path, LIBOWL_OPEN_WRITE);
+	r = libowl_open(&owl, database_path, flags);
 	if (r != 0) {
 		r = -r;
 		fprintf(stderr, "libowl: failed opening database file [%d]: %s\n", r, strerror(r));
 		goto exit;
 	}
 	/* Set loglevel to output errors */
-	libowl_set_loglevel(owl, debug ? LIBOWL_LOGLEVEL_DEBUG : LIBOWL_LOGLEVEL_ERROR);
-	/* commit to disk every 10 seconds */
-	libowl_set_buffer_duration(owl, delay_ms);
+	if (debug)
+		libowl_set_loglevel(owl, LIBOWL_LOGLEVEL_DEBUG);
+
+	/* Get buffer period unless provided on commandline */
+	if (delay_ms < 0)
+		delay_ms = config->buffer_period_ms;
+	if (delay_ms > 0) {
+		libowl_set_buffer_duration(owl, delay_ms);
+		printf("Buffering: ON (%d ms)\n", delay_ms);
+	}
+	else {
+		printf("Buffering: OFF\n");
+	}
+
+	printf("Size: %" PRId64 " bytes\n", libowl_get_size(owl));
+	/* Get maximum size unless provided on commandline */
+	if (maximum < 0)
+		maximum = config->max_size;
+	/* Set maximum size if requested */
+	if (maximum > 0) {
+		int64_t r64 = libowl_set_maximum_size(owl, maximum);
+		printf("Max: %" PRId64 ": requested: %" PRId64 "\n", r64, maximum);
+		if (r64 < 0) {
+			r = (int) -r64;
+			fprintf(stderr, "Failed setting maximum database size [%d]: %s\n", r, strerror(r));
+			goto exit;
+		}
+	}
 
 	/* Open iio context */
 	ctx = iio_create_default_context();
 	if (ctx == NULL) {
-		fprintf(stderr, "Filed iio_create_default_context [%d]: %s\n", errno, strerror(errno));
+		fprintf(stderr, "Failed iio_create_default_context [%d]: %s\n", errno, strerror(errno));
 		r = errno;
 		goto exit;
 	}
