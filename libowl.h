@@ -15,7 +15,10 @@ struct libowl;
  *
  * Returns 0 on success or negative errno for errors. */
 enum libowl_open_flags {
-	LIBOWL_OPEN_WRITE = 1 << 0,          /* Allow writing, in addition to reading */
+	LIBOWL_OPEN_WRITE          = 1 << 0, /* Allow writing, in addition to reading */
+	LIBOWL_ALLOW_TRIM          = 1 << 1, /* Allow deleting oldest entries when database is full.
+                                          * without this a full database will return -EDQUOT
+                                          * from libowl_update(). */
 	LIBOWL_TIMESTAMP_MONOTONIC = 1 << 2, /* Get sensors timestamps (epoch) from monotonic instead of realtime clock */
 };
 int libowl_open(struct libowl** owl, const char* path, int flags);
@@ -39,10 +42,13 @@ void libowl_set_buffer_duration(struct libowl* owl, int duration_ms);
 
 /* Get size of database in bytes. Returns negative errno on error. */
 int64_t libowl_get_size(struct libowl* owl);
+
 /* Get minimum size of database in bytes. Returns negative errno on error. */
 int64_t libowl_get_minimum_size(struct libowl* owl);
+
 /* Get maximum size of database in bytes. Returns negative errno on error. */
 int64_t libowl_get_maximum_size(struct libowl* owl);
+
 /* Set maximum database size in bytes. A value lower than libowl_get_minimum_size()
  * will return -EINVAL.
  * Size will be rounded up by page size.

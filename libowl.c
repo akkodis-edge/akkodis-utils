@@ -19,6 +19,13 @@ struct libowl_sensor {
 	void *priv;
 };
 
+enum internal_flags {
+	INTERNAL_OPEN_WRITE          = 1 << 0,
+	INTERNAL_TIMESTAMP_MONOTONIC = 1 << 1,
+	INTERNAL_FULL                = 1 << 2,
+	INTERNAL_ALLOW_TRIM          = 1 << 3,
+};
+
 struct libowl {
 	struct sqlite3 *db;
 	int flags;
@@ -33,6 +40,7 @@ struct libowl {
 	size_t buf_size;
 	size_t buf_pos;
 };
+
 
 static void timespec_add(struct timespec* result, const struct timespec* lhs, const struct timespec* rhs)
 {
@@ -82,7 +90,7 @@ static int libowl_default_monotonic(struct timespec* time, void* priv)
 
 static int is_write(const struct libowl* owl)
 {
-	return (owl->flags & LIBOWL_OPEN_WRITE) == LIBOWL_OPEN_WRITE;
+	return (owl->flags & INTERNAL_OPEN_WRITE) == INTERNAL_OPEN_WRITE;
 }
 
 const char* libowl_sensor_type_str(int type)
@@ -358,11 +366,17 @@ int libowl_open(struct libowl** owl, const char* path, int flags)
 		return -ENOMEM;
 
 	newowl->monotonic = libowl_default_monotonic;
-	newowl->flags = flags;
+	newowl->flags = 0;
+	if ((flags & LIBOWL_OPEN_WRITE) == LIBOWL_OPEN_WRITE)
+		newowl->flags |= INTERNAL_OPEN_WRITE;
+	if ((flags & LIBOWL_TIMESTAMP_MONOTONIC) == LIBOWL_TIMESTAMP_MONOTONIC)
+		newowl->flags |= INTERNAL_TIMESTAMP_MONOTONIC;
+	if ((flags & LIBOWL_ALLOW_TRIM) == LIBOWL_ALLOW_TRIM)
+		newowl->flags |= INTERNAL_ALLOW_TRIM;
 	newowl->loglevel = LIBOWL_LOGLEVEL_NONE;
 
 	int sqlite3_flags = 0;
-	if ((flags & LIBOWL_OPEN_WRITE) == LIBOWL_OPEN_WRITE)
+	if ((flags & INTERNAL_OPEN_WRITE) == INTERNAL_OPEN_WRITE)
 		sqlite3_flags |= SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE;
 	else
 		sqlite3_flags |= SQLITE_OPEN_READONLY;
@@ -374,7 +388,7 @@ int libowl_open(struct libowl** owl, const char* path, int flags)
 		goto exit;
 	}
 
-	if ((flags & LIBOWL_OPEN_WRITE) == LIBOWL_OPEN_WRITE) {
+	if ((flags & INTERNAL_OPEN_WRITE) == INTERNAL_OPEN_WRITE) {
 		r = libowl_init_database(newowl);
 		if (r != 0)
 			goto exit;
@@ -592,13 +606,35 @@ static char* join_statement(const struct libowl_statement_part* parts, size_t si
 	return sql;
 }
 
-static int libowl_sensor_push(struct libowl* owl, const struct libowl_sensor_data* data, size_t size, size_t* written)
+static int libowl_sensor_delete(struct libowl* owl, int64_t size)
 {
+	const struct libowl_bind bind_delete = {
+		.col = 1, .type = BIND_INT64, .data.i64 = size
+	};
+	sqlite3_stmt *stmt = libowl_single(owl,
+			"DELETE FROM data WHERE id IN (SELECT id FROM data LIMIT (?))",
+			&bind_delete, 1, NULL, 0);
+	if (stmt != NULL)
+		sqlite3_finalize(stmt);
+	return stmt == NULL ? -EBADF : 0;
+}
+
+static int libowl_sensor_push(struct libowl* owl, const struct libowl_sensor_data* data, size_t size, size_t* written, int delete_before_insert)
+{
+	if (size > INT64_MAX)
+		return -EINVAL;
+
 	sqlite3_stmt *stmt = NULL;
 	/* Explictly start write transaction to avoid autocommit for each sqlite3_step() call */
 	int r = libowl_single_simple(owl, "BEGIN IMMEDIATE");
 	if (r != 0)
 		goto exit;
+
+	if (delete_before_insert) {
+		r = libowl_sensor_delete(owl, (int64_t) size);
+		if (r != 0)
+			goto exit;
+	}
 
 	r = sqlite3_prepare_v2(owl->db,
 		"INSERT INTO data(sensor_id, value, epoch) VALUES "
@@ -626,7 +662,14 @@ static int libowl_sensor_push(struct libowl* owl, const struct libowl_sensor_dat
 		r = sqlite3_step(stmt);
 		if (r != SQLITE_DONE) {
 			pr_err(owl, "sqlite3_step(insert_data) [%d]: %s\n", r, sqlite3_errstr(r));
-			r = -EBADF;
+			switch (r) {
+			case SQLITE_FULL:
+				r = -EDQUOT;
+				break;
+			default:
+				r = -EBADF;
+				break;
+			}
 			goto exit;
 		}
 		r = sqlite3_reset(stmt);
@@ -677,7 +720,7 @@ static void print_sensor_reading(const struct libowl* owl, const struct libowl_s
 static int libowl_get_epoch(struct libowl* owl, double* epoch)
 {
 	int r = 0;
-	if ((owl->flags & LIBOWL_TIMESTAMP_MONOTONIC) == LIBOWL_TIMESTAMP_MONOTONIC) {
+	if ((owl->flags & INTERNAL_TIMESTAMP_MONOTONIC) == INTERNAL_TIMESTAMP_MONOTONIC) {
 		struct timespec time_now;
 		r = owl->monotonic(&time_now, owl->monotonic_priv);
 		if (r != 0)
@@ -763,20 +806,51 @@ int libowl_update(struct libowl* owl)
 			if (owl->buffer_duration.tv_sec > 0 || owl->buffer_duration.tv_nsec > 0)
 				pr_dbg(owl, "write buffer\n");
 
-			size_t written = 0;
-			r = libowl_sensor_push(owl, owl->buf, owl->buf_pos, &written);
-			/* move non written data to start of buffer */
-			if (written > 0 && written < owl->buf_pos)
-				memmove(owl->buf, &owl->buf[written], sizeof(owl->buf[0]) * (owl->buf_pos - written));
-			owl->buf_pos -= written;
-			/* reset buffer timer if all entries were written */
-			if (owl->buf_pos == 0) {
-				owl->buffer_end.tv_sec = 0;
-				owl->buffer_end.tv_nsec = 0;
+			size_t total_written = 0;
+			const int is_trim = (owl->flags & INTERNAL_ALLOW_TRIM) == INTERNAL_ALLOW_TRIM;
+			for (int i = 0; i < (is_trim ? 3 : 1); ++i) {
+				const int is_delete_before_insert = (owl->flags & INTERNAL_FULL) == INTERNAL_FULL;
+				size_t written = 0;
+				r = libowl_sensor_push(owl, owl->buf, owl->buf_pos, &written, is_delete_before_insert);
+				if (r == -EDQUOT && (owl->flags & INTERNAL_FULL) != INTERNAL_FULL) {
+					owl->flags |= INTERNAL_FULL;
+					if (is_trim)
+						pr_dbg(owl, "database full, enabling delete-before-insert mode\n");
+				}
+
+				/* Write transactions will fail if there is not enough free space in
+				 * database for all entries, space freed by "is_delete_before_insert"
+				 * is not taken into account for the current transaction and buffer
+				 * of free space is required. Create that here, if allowed. */
+				if (r == -EDQUOT && is_trim) {
+					/* Create a buffer of entries to be written + 50% (roundup)
+					 * to account for any changes in INTEGER sizes. */
+					size_t buffer_entries_extra = owl->buf_pos / 2 + (owl->buf_pos % 2 ? 1 : 0);
+					const size_t buffer_entries = (SIZE_MAX - buffer_entries_extra) > owl->buf_pos
+							? owl->buf_pos + buffer_entries_extra : SIZE_MAX;
+					pr_dbg(owl, "database full, freeing transaction buffer of size: %zu\n", buffer_entries);
+					r = libowl_sensor_delete(owl, buffer_entries);
+					if (r == 0)
+						break;
+					continue;
+				}
+				if(r != 0)
+					break;
+				/* move non written data to start of buffer */
+				if (written > 0 && written < owl->buf_pos)
+					memmove(owl->buf, &owl->buf[written], sizeof(owl->buf[0]) * (owl->buf_pos - written));
+				owl->buf_pos -= written;
+				total_written += written;
+				/* reset buffer timer if all entries were written and exit write loop */
+				if (owl->buf_pos == 0) {
+					owl->buffer_end.tv_sec = 0;
+					owl->buffer_end.tv_nsec = 0;
+					break;
+				}
 			}
-			if (r < 0)
+			if (r != 0)
 				return r;
-			return written > INT_MAX ? INT_MAX : (int) written;
+			return total_written > INT_MAX ? INT_MAX : (int) total_written;
 		}
 	}
 
