@@ -483,6 +483,8 @@ int64_t libowl_set_maximum_size(struct libowl* owl, int64_t bytes)
 {
 	if (bytes < libowl_get_minimum_size(owl))
 		return -EINVAL;
+	if (bytes < libowl_get_size(owl))
+		return -EFBIG;
 
 	int r = 0;
 
