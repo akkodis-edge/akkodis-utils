@@ -74,7 +74,7 @@ class LibOwl:
                 self.lib.libowl_sensor_data_free(byref(c_data_array[0]))
         return sensors
 
-    def read(self, limit, after=None, before=None, name=None, type=None):
+    def read(self, limit, descending=False, after=None, before=None, name=None, type=None):
         # limit: maximum numbero of readings
         # after: return readings AFTER this epoch value
         # before: return readings BEFORE this epoch value
@@ -103,8 +103,9 @@ class LibOwl:
         # work
         out = []
         processed_data = 0
+        order = c_int(1) if descending else c_int(0)
         try:
-            ret = self.lib.libowl_read(self.owl, c_int(0), byref(c_filter_array), c_size_t(len(c_filter_array)),
+            ret = self.lib.libowl_read(self.owl, order, byref(c_filter_array), c_size_t(len(c_filter_array)),
                                                 byref(c_data_array), c_size_t(len(c_data_array)))
             if ret < 0:
                 raise OSError(ret, os.strerror(ret), 'Failed reading db')
