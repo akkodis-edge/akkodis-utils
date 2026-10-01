@@ -905,9 +905,16 @@ int libowl_sensor_data_free(struct libowl_sensor_data* data)
 	return 0;
 }
 
+enum libowl_sensor_filter_type {
+	LIBOWL_FILTER_EPOCH,
+	LIBOWL_FILTER_INDEX,
+	LIBOWL_FILTER_NAME,
+	LIBOWL_FILTER_TYPE,
+};
+
 int libowl_filter_index(struct libowl_filter* filter, int op, int64_t index)
 {
-	if (op > LIBOWL_OP_EQUAL)
+	if (filter == NULL || op > LIBOWL_OP_EQUAL)
 		return -EINVAL;
 	filter->type = LIBOWL_FILTER_INDEX;
 	filter->op = op;
@@ -917,7 +924,7 @@ int libowl_filter_index(struct libowl_filter* filter, int op, int64_t index)
 
 int libowl_filter_epoch(struct libowl_filter* filter, int op, double epoch)
 {
-	if (op > LIBOWL_OP_EQUAL)
+	if (filter == NULL || op > LIBOWL_OP_EQUAL)
 		return -EINVAL;
 	filter->type = LIBOWL_FILTER_EPOCH;
 	filter->op = op;
@@ -927,7 +934,7 @@ int libowl_filter_epoch(struct libowl_filter* filter, int op, double epoch)
 
 int libowl_filter_name(struct libowl_filter* filter, int op, const char* name)
 {
-	if (op > LIBOWL_OP_EQUAL || name == NULL)
+	if (filter == NULL || op > LIBOWL_OP_EQUAL || name == NULL)
 		return -EINVAL;
 	filter->type = LIBOWL_FILTER_NAME;
 	filter->op = op;
@@ -937,11 +944,23 @@ int libowl_filter_name(struct libowl_filter* filter, int op, const char* name)
 
 int libowl_filter_type(struct libowl_filter* filter, int op, int type)
 {
-	if (op > LIBOWL_OP_EQUAL || libowl_sensor_type_str(type) == NULL)
+	if (filter == NULL || op > LIBOWL_OP_EQUAL || libowl_sensor_type_str(type) == NULL)
 		return -EINVAL;
 	filter->type = LIBOWL_FILTER_TYPE;
 	filter->op = op;
 	filter->data.mint = type;
+	return 0;
+}
+
+enum libowl_option_type {
+	LIBOWL_OPTION_DESCENDING,
+};
+
+int libowl_option_descending(struct libowl_option* option)
+{
+	if (option == NULL)
+		return -EINVAL;
+	option->type = LIBOWL_OPTION_DESCENDING;
 	return 0;
 }
 
@@ -1003,9 +1022,35 @@ static int filter_to_statement_and_bind(const struct libowl_filter* filter, size
 	return 0;
 }
 
-int libowl_read(struct libowl* owl, int flags, const struct libowl_filter* filters, size_t filter_size, struct libowl_sensor_data* data, size_t size)
+enum read_options_flags {
+	READ_OPTION_DESCENDING = 1 << 0,
+};
+
+struct read_options {
+	int flags;
+};
+
+static int parse_options(struct read_options* ropts, const struct libowl_option* options, size_t size)
 {
-	(void) flags;
+	if (options == NULL)
+		return 0;
+
+	for (size_t i = 0; i < size; ++i) {
+		switch(options->type) {
+		case LIBOWL_OPTION_DESCENDING:
+			ropts->flags |= READ_OPTION_DESCENDING;
+			break;
+		default:
+			return -EINVAL;
+		}
+	}
+	return 0;
+}
+
+int libowl_read(struct libowl* owl, const struct libowl_option* options, size_t option_size,
+									const struct libowl_filter* filters, size_t filter_size,
+									struct libowl_sensor_data* data, size_t size)
+{
 	if (owl == NULL || filters == NULL || filter_size == 0 || data == NULL || size == 0 || size > INT_MAX)
 		return -EINVAL;
 
@@ -1015,6 +1060,13 @@ int libowl_read(struct libowl* owl, int flags, const struct libowl_filter* filte
 	char *sql = NULL;
 	size_t pos = 0;
 	int r = 0;
+
+	/* parse options */
+	struct read_options ropts;
+	memset(&ropts, 0, sizeof(ropts));
+	r = parse_options(&ropts, options, option_size);
+	if (r != 0)
+		goto exit;
 
 	/* Allocate space for all required statement sections which will later be joined.
 	 * base + filters + order + limit */
@@ -1057,7 +1109,7 @@ int libowl_read(struct libowl* owl, int flags, const struct libowl_filter* filte
 	}
 
 	/* Add order */
-	const int is_descending = (flags & LIBOWL_READ_DESCENDING) == LIBOWL_READ_DESCENDING;
+	const int is_descending = (ropts.flags & READ_OPTION_DESCENDING) == READ_OPTION_DESCENDING;
 	parts[part_size - 2].str = is_descending ? " ORDER BY A.id DESC" : " ORDER BY A.id ASC";
 
 	/* Add limit */

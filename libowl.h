@@ -91,7 +91,6 @@ int libowl_update(struct libowl* owl);
  * Useful for avoiding busy loops. */
 int libowl_update_delay(const struct libowl* owl);
 
-
 struct libowl_sensor_data {
 	const char *name;
 	int64_t index;
@@ -99,12 +98,7 @@ struct libowl_sensor_data {
 	int type;
 	int value;
 };
-enum libowl_sensor_filter_type {
-	LIBOWL_FILTER_EPOCH,
-	LIBOWL_FILTER_INDEX,
-	LIBOWL_FILTER_NAME,
-	LIBOWL_FILTER_TYPE,
-};
+
 enum libowl_sensor_filter_op {
 	LIBOWL_OP_GREATER_THAN,
 	LIBOWL_OP_GREATER_EQUAL,
@@ -112,9 +106,10 @@ enum libowl_sensor_filter_op {
 	LIBOWL_OP_LESS_EQUAL,
 	LIBOWL_OP_EQUAL,
 };
+
 struct libowl_filter {
-	enum libowl_sensor_filter_type type;
-	enum libowl_sensor_filter_op op;
+	int type;
+	int op;
 	union {
 		double mdouble;
 		int64_t mi64;
@@ -130,16 +125,25 @@ int libowl_filter_index(struct libowl_filter* filter, int op, int64_t index);
 int libowl_filter_name(struct libowl_filter* filter, int op, const char* name);
 int libowl_filter_type(struct libowl_filter* filter, int op, int type);
 
-/* Read from libowl based on "filters" of "filter_size" into "data" of "size".
+struct libowl_option {
+	int type;
+};
+
+/* Initialize libowl_option using utility functions.
+ * Will return 0 for success or negative errno for error. */
+/* Return data in descending order, instead of default ascending */
+int libowl_option_descending(struct libowl_option* option);
+
+/* Read from libowl based on "filters" of "filter_size" into "data" of "size"
+ * with "options" of "option_size".
  *
  * Caller is responsible of freeing returned "data", see "libowl_sensor_data_free()".
  *
  * Returns number of entries returned in data, negative errno for error.
  */
-enum libowl_read_flags {
-	LIBOWL_READ_DESCENDING = 1 << 0, /* Default is ascending */
-};
-int libowl_read(struct libowl* owl, int flags, const struct libowl_filter* filters, size_t filter_size, struct libowl_sensor_data* data, size_t size);
+int libowl_read(struct libowl* owl, const struct libowl_option* options, size_t option_size,
+									const struct libowl_filter* filters, size_t filter_size,
+									struct libowl_sensor_data* data, size_t size);
 int libowl_sensor_data_free(struct libowl_sensor_data* data);
 
 #ifdef __cplusplus

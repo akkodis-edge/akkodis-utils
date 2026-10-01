@@ -22,6 +22,10 @@ class LibOwlFilter(Structure):
         ('op', c_int),
         ('data', LibOwlFilterData)]
 
+class LibOwlOption(Structure):
+    _fields_ = [
+        ('type', c_int)]
+
 SENSOR_TEMPERATURE = 0
 SENSOR_VOLTAGE = 1
 SENSOR_CURRENT = 2
@@ -61,7 +65,7 @@ class LibOwl:
             if (ret != 0):
                 raise OSError(ret, os.strerror(ret), 'Failed creating filter')
             try:
-                ret = self.lib.libowl_read(self.owl, c_int(0), byref(c_filter_array), c_size_t(len(c_filter_array)),
+                ret = self.lib.libowl_read(self.owl, c_void_p(), c_size_t(0), byref(c_filter_array), c_size_t(len(c_filter_array)),
                                                 byref(c_data_array), c_size_t(len(c_data_array)))
                 if ret < 0:
                      raise OSError(ret, os.strerror(ret), 'Failed reading db')
@@ -103,9 +107,19 @@ class LibOwl:
         # work
         out = []
         processed_data = 0
-        order = c_int(1) if descending else c_int(0)
+        c_option_array = c_void_p()
+        c_option_array_size = c_size_t(0)
+        if descending:
+            c_option_array_type = LibOwlOption * 1
+            c_option_array = c_option_array_type()
+            c_option_array_size = c_size_t(1)
+            ret = self.lib.libowl_option_descending(byref(c_option_array[0]))
+            if (ret != 0):
+                raise OSError(ret, os.strerror(ret), 'Failed creating option')
+
         try:
-            ret = self.lib.libowl_read(self.owl, order, byref(c_filter_array), c_size_t(len(c_filter_array)),
+            ret = self.lib.libowl_read(self.owl, byref(c_option_array), c_option_array_size,
+                                                byref(c_filter_array), c_size_t(len(c_filter_array)),
                                                 byref(c_data_array), c_size_t(len(c_data_array)))
             if ret < 0:
                 raise OSError(ret, os.strerror(ret), 'Failed reading db')
