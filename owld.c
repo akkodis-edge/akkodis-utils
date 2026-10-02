@@ -54,6 +54,7 @@ static const cyaml_strval_t sensor_config_type_strings[] = {
 	{"temperature", LIBOWL_SENSOR_TEMP},
 	{"voltage", LIBOWL_SENSOR_VOLTAGE},
 	{"current", LIBOWL_SENSOR_CURRENT},
+	{"ratio", LIBOWL_SENSOR_RATIO},
 };
 
 static const cyaml_strval_t sensor_config_methods_strings[] = {

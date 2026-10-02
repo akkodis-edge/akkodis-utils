@@ -102,6 +102,8 @@ const char* libowl_sensor_type_str(int type)
 		return "VOLTAGE";
 	case LIBOWL_SENSOR_CURRENT:
 		return "CURRENT";
+	case LIBOWL_SENSOR_RATIO:
+		return "RATIO";
 	default:
 		return NULL;
 	}
