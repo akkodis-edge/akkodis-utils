@@ -105,6 +105,7 @@ enum libowl_sensor_filter_op {
 	LIBOWL_OP_LESS_THAN,
 	LIBOWL_OP_LESS_EQUAL,
 	LIBOWL_OP_EQUAL,
+	LIBOWL_OP_NOT_EQUAL,
 };
 
 struct libowl_filter {

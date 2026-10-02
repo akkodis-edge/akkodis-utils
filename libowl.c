@@ -942,7 +942,7 @@ enum libowl_sensor_filter_type {
 
 int libowl_filter_index(struct libowl_filter* filter, int op, int64_t index)
 {
-	if (filter == NULL || op > LIBOWL_OP_EQUAL)
+	if (filter == NULL || op > LIBOWL_OP_NOT_EQUAL)
 		return -EINVAL;
 	filter->type = LIBOWL_FILTER_INDEX;
 	filter->op = op;
@@ -952,7 +952,7 @@ int libowl_filter_index(struct libowl_filter* filter, int op, int64_t index)
 
 int libowl_filter_epoch(struct libowl_filter* filter, int op, double epoch)
 {
-	if (filter == NULL || op > LIBOWL_OP_EQUAL)
+	if (filter == NULL || op > LIBOWL_OP_NOT_EQUAL)
 		return -EINVAL;
 	filter->type = LIBOWL_FILTER_EPOCH;
 	filter->op = op;
@@ -962,7 +962,7 @@ int libowl_filter_epoch(struct libowl_filter* filter, int op, double epoch)
 
 int libowl_filter_name(struct libowl_filter* filter, int op, const char* name)
 {
-	if (filter == NULL || op > LIBOWL_OP_EQUAL || name == NULL)
+	if (filter == NULL || op > LIBOWL_OP_NOT_EQUAL || name == NULL)
 		return -EINVAL;
 	filter->type = LIBOWL_FILTER_NAME;
 	filter->op = op;
@@ -972,7 +972,7 @@ int libowl_filter_name(struct libowl_filter* filter, int op, const char* name)
 
 int libowl_filter_type(struct libowl_filter* filter, int op, int type)
 {
-	if (filter == NULL || op > LIBOWL_OP_EQUAL || libowl_sensor_type_str(type) == NULL)
+	if (filter == NULL || op > LIBOWL_OP_NOT_EQUAL || libowl_sensor_type_str(type) == NULL)
 		return -EINVAL;
 	filter->type = LIBOWL_FILTER_TYPE;
 	filter->op = op;
@@ -1045,6 +1045,8 @@ static const char* op_to_str(int op)
 		return "<=";
 	case LIBOWL_OP_EQUAL:
 		return "==";
+	case LIBOWL_OP_NOT_EQUAL:
+		return "!=";
 	}
 	return "XX";
 }

@@ -298,6 +298,21 @@ TEST_CASE("libowl_read") {
 		sensor_data_equal(&test.data[2], &expected[6]);
 	}
 
+
+	SECTION("Filter by name -- not sensor1") {
+		struct test_data test;
+		auto cleanup = prepare_data(&test, database_size + 1);
+		struct libowl_filter filter;
+		REQUIRE(libowl_filter_name(&filter, LIBOWL_OP_NOT_EQUAL, "sensor1") == 0);
+		REQUIRE(libowl_read(owl, NULL, 0, &filter, 1, test.data, test.size) == 6);
+		sensor_data_equal(&test.data[0], &expected[1]);
+		sensor_data_equal(&test.data[1], &expected[2]);
+		sensor_data_equal(&test.data[2], &expected[4]);
+		sensor_data_equal(&test.data[3], &expected[5]);
+		sensor_data_equal(&test.data[4], &expected[7]);
+		sensor_data_equal(&test.data[5], &expected[8]);
+	}
+
 	SECTION("Filter by name -- find all sensors") {
 		struct test_data test;
 		auto cleanup = prepare_data(&test, database_size + 1);
