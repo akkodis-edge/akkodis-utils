@@ -8,6 +8,7 @@
 #include <poll.h>
 #include <signal.h>
 #include <sys/signalfd.h>
+#include <sys/sysinfo.h>
 #include <cyaml/cyaml.h>
 #include <iio.h>
 #include "libowl.h"
@@ -30,6 +31,7 @@ static void print_usage()
 enum method {
 	OWLD_IIO,
 	OWLD_FILE,
+	OWLD_SYS,
 };
 
 struct sensor_config {
@@ -60,6 +62,7 @@ static const cyaml_strval_t sensor_config_type_strings[] = {
 static const cyaml_strval_t sensor_config_methods_strings[] = {
 	{"iio", OWLD_IIO},
 	{"file", OWLD_FILE},
+	{"sys", OWLD_SYS},
 };
 
 static const cyaml_schema_field_t sensor_config_fields_schema[] = {
@@ -100,6 +103,92 @@ struct owl_device {
 	void (*free)(void*);
 	void* priv;
 };
+
+enum owl_sys_type {
+	OWLD_SYS_NONE,
+	OWLD_SYS_CPU_USAGE,
+	OWLD_SYS_MEM_USAGE,
+};
+
+struct owl_sys_device {
+	int type;
+};
+
+#define PERCENTAGE_TO_PPM 1000000
+
+static int owl_sys_read(int* value, void* priv)
+{
+	struct owl_sys_device *data = (struct owl_sys_device*) priv;
+	int r = 0;
+
+	struct sysinfo sinfo;
+	r = sysinfo(&sinfo);
+	if (r != 0)
+		return -errno;
+
+	switch (data->type) {
+	case OWLD_SYS_CPU_USAGE:
+	{
+		/* retrieve running cpu count */
+		errno = 0;
+		const long cpu_online = sysconf(_SC_NPROCESSORS_ONLN);
+		if (cpu_online < 0) {
+			if (errno == 0)
+				return -ERANGE;
+			else
+				return -errno;
+		}
+		if (cpu_online < 1)
+			return -ENXIO;
+
+		/* Return value as ppm */
+		const double ratio = 1.0 / (1 << SI_LOAD_SHIFT) * PERCENTAGE_TO_PPM;
+		*value = sinfo.loads[0] * ratio / cpu_online;
+		break;
+	}
+	case OWLD_SYS_MEM_USAGE:
+	{
+		const unsigned long unavailable = sinfo.totalram - (sinfo.freeram + sinfo.bufferram);
+		const double used = (double) unavailable / sinfo.totalram;
+		*value = used * PERCENTAGE_TO_PPM;
+		break;
+	}
+	default:
+		return -EINVAL;
+	}
+	return 0;
+}
+
+static void owl_sys_free(void* priv)
+{
+	struct owl_sys_device *data = (struct owl_sys_device*) priv;
+	free(data);
+}
+
+static const struct libowl_sensor_ops sys_sensor_ops = {
+	.read = owl_sys_read,
+};
+
+static int create_owl_sys_device(struct sensor_config* scfg, struct owl_device* dev, struct libowl_sensor_ops** ops)
+{
+	int type = OWLD_SYS_NONE;
+	if (strcmp(scfg->device, "cpu-usage") == 0)
+		type = OWLD_SYS_CPU_USAGE;
+	else if (strcmp(scfg->device, "mem-usage") == 0)
+		type = OWLD_SYS_MEM_USAGE;
+
+	if (type == OWLD_SYS_NONE)
+		return -EINVAL;
+
+	dev->free = owl_sys_free;
+	dev->priv = calloc(1, sizeof(struct owl_sys_device));
+	if (dev->priv == NULL)
+		return -ENOMEM;
+	struct owl_sys_device *data = (struct owl_sys_device*) dev->priv;
+	data->type = type;
+	*ops = (struct libowl_sensor_ops*) &sys_sensor_ops;
+	return 0;
+}
 
 struct owl_iio_device {
 	struct iio_device *dev;
@@ -278,6 +367,9 @@ static int create_devices(struct owl_device** devices, size_t* size, struct libo
 			break;
 		case OWLD_FILE:
 			r = create_owl_file_device(&config->sensors[i], &ptr[ptr_size - 1], (struct libowl_sensor_ops**) &ops);
+			break;
+		case OWLD_SYS:
+			r = create_owl_sys_device(&config->sensors[i], &ptr[ptr_size - 1], (struct libowl_sensor_ops**) &ops);
 			break;
 		default:
 			r = -EINVAL;
