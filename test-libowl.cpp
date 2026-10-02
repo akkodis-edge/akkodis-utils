@@ -398,3 +398,208 @@ TEST_CASE("buffer_duration") {
 		REQUIRE(libowl_update(owl) == 1);
 	}
 }
+
+TEST_CASE("read aggregate") {
+	/* Prepare database with separate entries, use our monotonic with second resolution to avoid issues with epoch double precision */
+	struct libowl *owl = nullptr;
+	REQUIRE(libowl_open(&owl, "file::memory:?cache=shared", LIBOWL_OPEN_WRITE | LIBOWL_TIMESTAMP_MONOTONIC) == 0);
+	auto at_exit = std::unique_ptr<struct libowl, Deleter>(owl);
+	libowl_set_loglevel(owl, LIBOWL_LOGLEVEL_ERROR);
+	int seconds = 0;
+	REQUIRE(libowl_set_monotonic(owl, monotonic_s, &seconds) == 0);
+
+	const int sensor_1_multiple = 10;
+	const int sensor_2_multiple = 100;
+	const int sensor_3_multiple = 1000;
+
+	int sensor1_value = sensor_1_multiple;
+	int sensor2_value = sensor_2_multiple;
+	int sensor3_value = sensor_3_multiple;
+	REQUIRE(libowl_add_sensor(owl, LIBOWL_SENSOR_TEMP, "sensor1", 0, &dummy_ops, 0, &sensor1_value) == 0);
+	REQUIRE(libowl_add_sensor(owl, LIBOWL_SENSOR_TEMP, "sensor2", 0, &dummy_ops, 0, &sensor2_value) == 0);
+	REQUIRE(libowl_add_sensor(owl, LIBOWL_SENSOR_TEMP, "sensor3", 0, &dummy_ops, 0, &sensor3_value) == 0);
+
+	/* Add nine readings for each sensor at three separate timepoints */
+	for (int i = 0; i < 9; ++i) {
+		REQUIRE(libowl_update(owl) == 3);
+		seconds += 10;
+		sensor1_value += sensor_1_multiple;
+		sensor2_value += sensor_2_multiple;
+		sensor3_value += sensor_3_multiple;
+	}
+
+	/* 27 readings available in database */
+	const size_t database_size = 27;
+	/* expected data in database */
+	const struct libowl_sensor_data expected[database_size] = {
+		{"sensor1", 1, 0.0, LIBOWL_SENSOR_TEMP, sensor_1_multiple * 1},
+		{"sensor2", 2, 0.0, LIBOWL_SENSOR_TEMP, sensor_2_multiple * 1},
+		{"sensor3", 3, 0.0, LIBOWL_SENSOR_TEMP, sensor_3_multiple * 1},
+		{"sensor1", 4, 10.0, LIBOWL_SENSOR_TEMP, sensor_1_multiple * 2},
+		{"sensor2", 5, 10.0, LIBOWL_SENSOR_TEMP, sensor_2_multiple * 2},
+		{"sensor3", 6, 10.0, LIBOWL_SENSOR_TEMP, sensor_3_multiple * 2},
+		{"sensor1", 7, 20.0, LIBOWL_SENSOR_TEMP, sensor_1_multiple * 3},
+		{"sensor2", 8, 20.0, LIBOWL_SENSOR_TEMP, sensor_2_multiple * 3},
+		{"sensor3", 9, 20.0, LIBOWL_SENSOR_TEMP, sensor_3_multiple * 3},
+		{"sensor1", 10, 30.0, LIBOWL_SENSOR_TEMP, sensor_1_multiple * 4},
+		{"sensor2", 11, 30.0, LIBOWL_SENSOR_TEMP, sensor_2_multiple * 4},
+		{"sensor3", 12, 30.0, LIBOWL_SENSOR_TEMP, sensor_3_multiple * 4},
+		{"sensor1", 13, 40.0, LIBOWL_SENSOR_TEMP, sensor_1_multiple * 5},
+		{"sensor2", 14, 40.0, LIBOWL_SENSOR_TEMP, sensor_2_multiple * 5},
+		{"sensor3", 15, 40.0, LIBOWL_SENSOR_TEMP, sensor_3_multiple * 5},
+		{"sensor1", 16, 50.0, LIBOWL_SENSOR_TEMP, sensor_1_multiple * 6},
+		{"sensor2", 17, 50.0, LIBOWL_SENSOR_TEMP, sensor_2_multiple * 6},
+		{"sensor3", 18, 50.0, LIBOWL_SENSOR_TEMP, sensor_3_multiple * 6},
+		{"sensor1", 19, 60.0, LIBOWL_SENSOR_TEMP, sensor_1_multiple * 7},
+		{"sensor2", 20, 60.0, LIBOWL_SENSOR_TEMP, sensor_2_multiple * 7},
+		{"sensor3", 21, 60.0, LIBOWL_SENSOR_TEMP, sensor_3_multiple * 7},
+		{"sensor1", 22, 70.0, LIBOWL_SENSOR_TEMP, sensor_1_multiple * 8},
+		{"sensor2", 23, 70.0, LIBOWL_SENSOR_TEMP, sensor_2_multiple * 8},
+		{"sensor3", 24, 70.0, LIBOWL_SENSOR_TEMP, sensor_3_multiple * 8},
+		{"sensor1", 25, 80.0, LIBOWL_SENSOR_TEMP, sensor_1_multiple * 9},
+		{"sensor2", 26, 80.0, LIBOWL_SENSOR_TEMP, sensor_2_multiple * 9},
+		{"sensor3", 27, 80.0, LIBOWL_SENSOR_TEMP, sensor_3_multiple * 9},
+	};
+
+	SECTION("Sanity check created data is as expected") {
+		struct test_data test;
+		auto cleanup = prepare_data(&test, database_size + 1);
+		struct libowl_filter filter;
+		REQUIRE(libowl_filter_index(&filter, LIBOWL_OP_GREATER_EQUAL, 1) == 0);
+		REQUIRE(libowl_read(owl, NULL, 0, &filter, 1, test.data, test.size) == database_size);
+		for (size_t i = 0; i < database_size; ++i)
+			sensor_data_equal(&test.data[i], &expected[i]);
+	}
+
+	SECTION("interval") {
+		struct libowl_filter filters[2];
+		REQUIRE(libowl_filter_epoch(&filters[0], LIBOWL_OP_GREATER_EQUAL, 0.0) == 0);
+		REQUIRE(libowl_filter_epoch(&filters[1], LIBOWL_OP_LESS_EQUAL, 80.0) == 0);
+		struct libowl_option options[2];
+		REQUIRE(libowl_option_interval(&options[0], 30.0) == 0);
+
+		SECTION("Average") {
+			const size_t avg_expected_size = 9;
+			const struct libowl_sensor_data avg_expected[avg_expected_size] = {
+				{"sensor1", 7, 20.0, LIBOWL_SENSOR_TEMP, 20},
+				{"sensor2", 8, 20.0, LIBOWL_SENSOR_TEMP, 200},
+				{"sensor3", 9, 20.0, LIBOWL_SENSOR_TEMP, 2000},
+				{"sensor1", 16, 50.0, LIBOWL_SENSOR_TEMP, 50},
+				{"sensor2", 17, 50.0, LIBOWL_SENSOR_TEMP, 500},
+				{"sensor3", 18, 50.0, LIBOWL_SENSOR_TEMP, 5000},
+				{"sensor1", 25, 80.0, LIBOWL_SENSOR_TEMP, 80},
+				{"sensor2", 26, 80.0, LIBOWL_SENSOR_TEMP, 800},
+				{"sensor3", 27, 80.0, LIBOWL_SENSOR_TEMP, 8000},
+			};
+
+			REQUIRE(libowl_option_avg(&options[1]) == 0);
+			struct test_data test;
+			auto cleanup = prepare_data(&test, avg_expected_size + 1);
+			const int r = libowl_read(owl, options, 2, filters, 2, test.data, test.size);
+			REQUIRE(r == avg_expected_size);
+			for (int i = 0; i < r; ++i)
+				sensor_data_equal(&test.data[i], &avg_expected[i]);
+		}
+
+		SECTION("Max") {
+			const size_t max_expected_size = 9;
+			const struct libowl_sensor_data max_expected[max_expected_size] = {
+				{"sensor1", 7, 20.0, LIBOWL_SENSOR_TEMP, 30},
+				{"sensor2", 8, 20.0, LIBOWL_SENSOR_TEMP, 300},
+				{"sensor3", 9, 20.0, LIBOWL_SENSOR_TEMP, 3000},
+				{"sensor1", 16, 50.0, LIBOWL_SENSOR_TEMP, 60},
+				{"sensor2", 17, 50.0, LIBOWL_SENSOR_TEMP, 600},
+				{"sensor3", 18, 50.0, LIBOWL_SENSOR_TEMP, 6000},
+				{"sensor1", 25, 80.0, LIBOWL_SENSOR_TEMP, 90},
+				{"sensor2", 26, 80.0, LIBOWL_SENSOR_TEMP, 900},
+				{"sensor3", 27, 80.0, LIBOWL_SENSOR_TEMP, 9000},
+			};
+
+			REQUIRE(libowl_option_max(&options[1]) == 0);
+			struct test_data test;
+			auto cleanup = prepare_data(&test, max_expected_size + 1);
+			const int r = libowl_read(owl, options, 2, filters, 2, test.data, test.size);
+			REQUIRE(r == max_expected_size);
+			for (int i = 0; i < r; ++i)
+				sensor_data_equal(&test.data[i], &max_expected[i]);
+		}
+
+		SECTION("Min") {
+			const size_t min_expected_size = 9;
+			const struct libowl_sensor_data min_expected[min_expected_size] = {
+				{"sensor1", 7, 20.0, LIBOWL_SENSOR_TEMP, 10},
+				{"sensor2", 8, 20.0, LIBOWL_SENSOR_TEMP, 100},
+				{"sensor3", 9, 20.0, LIBOWL_SENSOR_TEMP, 1000},
+				{"sensor1", 16, 50.0, LIBOWL_SENSOR_TEMP, 40},
+				{"sensor2", 17, 50.0, LIBOWL_SENSOR_TEMP, 400},
+				{"sensor3", 18, 50.0, LIBOWL_SENSOR_TEMP, 4000},
+				{"sensor1", 25, 80.0, LIBOWL_SENSOR_TEMP, 70},
+				{"sensor2", 26, 80.0, LIBOWL_SENSOR_TEMP, 700},
+				{"sensor3", 27, 80.0, LIBOWL_SENSOR_TEMP, 7000},
+			};
+
+			REQUIRE(libowl_option_min(&options[1]) == 0);
+			struct test_data test;
+			auto cleanup = prepare_data(&test, min_expected_size + 1);
+			const int r = libowl_read(owl, options, 2, filters, 2, test.data, test.size);
+			REQUIRE(r == min_expected_size);
+			for (int i = 0; i < r; ++i)
+				sensor_data_equal(&test.data[i], &min_expected[i]);
+		}
+	}
+
+	SECTION("Total") {
+		struct libowl_filter filters[2];
+		REQUIRE(libowl_filter_epoch(&filters[0], LIBOWL_OP_GREATER_EQUAL, 0.0) == 0);
+		REQUIRE(libowl_filter_epoch(&filters[1], LIBOWL_OP_LESS_EQUAL, 80.0) == 0);
+		struct libowl_option options[1];
+
+		SECTION("Average") {
+			const size_t avg_expected_size = 3;
+			const struct libowl_sensor_data avg_expected[avg_expected_size] = {
+				{"sensor1", 25, 80.0, LIBOWL_SENSOR_TEMP, 50},
+				{"sensor2", 26, 80.0, LIBOWL_SENSOR_TEMP, 500},
+				{"sensor3", 27, 80.0, LIBOWL_SENSOR_TEMP, 5000},
+			};
+			REQUIRE(libowl_option_avg(&options[0]) == 0);
+			struct test_data test;
+			auto cleanup = prepare_data(&test, avg_expected_size + 1);
+			const int r = libowl_read(owl, options, 1, filters, 2, test.data, test.size);
+			REQUIRE(r == avg_expected_size);
+			for (int i = 0; i < r; ++i)
+				sensor_data_equal(&test.data[i], &avg_expected[i]);
+		}
+
+		SECTION("Max") {
+			const size_t max_expected_size = 3;
+			const struct libowl_sensor_data max_expected[max_expected_size] = {
+				{"sensor1", 25, 80.0, LIBOWL_SENSOR_TEMP, 90},
+				{"sensor2", 26, 80.0, LIBOWL_SENSOR_TEMP, 900},
+				{"sensor3", 27, 80.0, LIBOWL_SENSOR_TEMP, 9000},
+			};
+			REQUIRE(libowl_option_max(&options[0]) == 0);
+			struct test_data test;
+			auto cleanup = prepare_data(&test, max_expected_size + 1);
+			const int r = libowl_read(owl, options, 1, filters, 2, test.data, test.size);
+			REQUIRE(r == max_expected_size);
+			for (int i = 0; i < r; ++i)
+				sensor_data_equal(&test.data[i], &max_expected[i]);
+		}
+
+		SECTION("Min") {
+			const size_t min_expected_size = 3;
+			const struct libowl_sensor_data min_expected[min_expected_size] = {
+				{"sensor1", 25, 80.0, LIBOWL_SENSOR_TEMP, 10},
+				{"sensor2", 26, 80.0, LIBOWL_SENSOR_TEMP, 100},
+				{"sensor3", 27, 80.0, LIBOWL_SENSOR_TEMP, 1000},
+			};
+			REQUIRE(libowl_option_min(&options[0]) == 0);
+			struct test_data test;
+			auto cleanup = prepare_data(&test, min_expected_size + 1);
+			const int r = libowl_read(owl, options, 1, filters, 2, test.data, test.size);
+			REQUIRE(r == min_expected_size);
+			for (int i = 0; i < r; ++i)
+				sensor_data_equal(&test.data[i], &min_expected[i]);
+		}
+	}
+}

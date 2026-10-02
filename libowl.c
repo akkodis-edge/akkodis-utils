@@ -142,6 +142,34 @@ struct libowl_bind {
 	} data;
 };
 
+static void bind_text(struct libowl_bind* bind, int col, const char* str)
+{
+	bind->col = col;
+	bind->type = BIND_TEXT;
+	bind->data.str = str;
+}
+
+static void bind_int(struct libowl_bind* bind, int col, int value)
+{
+	bind->col = col;
+	bind->type = BIND_INT;
+	bind->data.integer = value;
+}
+
+static void bind_int64(struct libowl_bind* bind, int col, int64_t value)
+{
+	bind->col = col;
+	bind->type = BIND_INT64;
+	bind->data.i64 = value;
+}
+
+static void bind_double(struct libowl_bind* bind, int col, double value)
+{
+	bind->col = col;
+	bind->type = BIND_DOUBLE;
+	bind->data.dbl = value;
+}
+
 #define ARRAY_SIZE(x) (sizeof(x) / sizeof((x)[0]))
 
 static int libowl_stmt_col(struct libowl* owl, struct sqlite3_stmt* stmt, struct libowl_bind* bind, size_t size)
@@ -954,6 +982,10 @@ int libowl_filter_type(struct libowl_filter* filter, int op, int type)
 
 enum libowl_option_type {
 	LIBOWL_OPTION_DESCENDING,
+	LIBOWL_OPTION_INTERVAL,
+	LIBOWL_OPTION_AVG,
+	LIBOWL_OPTION_MIN,
+	LIBOWL_OPTION_MAX,
 };
 
 int libowl_option_descending(struct libowl_option* option)
@@ -961,6 +993,42 @@ int libowl_option_descending(struct libowl_option* option)
 	if (option == NULL)
 		return -EINVAL;
 	option->type = LIBOWL_OPTION_DESCENDING;
+	return 0;
+}
+
+int libowl_option_interval(struct libowl_option* option, double interval)
+{
+	if (option == NULL || interval < 0.001)
+		return -EINVAL;
+	const double milliseconds = interval * 1000;
+	if (isinf(milliseconds))
+		return -ERANGE;
+	option->type = LIBOWL_OPTION_INTERVAL;
+	option->data.mdouble = milliseconds;
+	return 0;
+}
+
+int libowl_option_avg(struct libowl_option* option)
+{
+	if (option == NULL)
+		return -EINVAL;
+	option->type = LIBOWL_OPTION_AVG;
+	return 0;
+}
+
+int libowl_option_min(struct libowl_option* option)
+{
+	if (option == NULL)
+		return -EINVAL;
+	option->type = LIBOWL_OPTION_MIN;
+	return 0;
+}
+
+int libowl_option_max(struct libowl_option* option)
+{
+	if (option == NULL)
+		return -EINVAL;
+	option->type = LIBOWL_OPTION_MAX;
 	return 0;
 }
 
@@ -986,29 +1054,24 @@ static int filter_to_statement_and_bind(const struct libowl_filter* filter, size
 	char *field = NULL;
 	switch (filter->type) {
 	case LIBOWL_FILTER_INDEX:
-		bind->type = BIND_INT64;
-		bind->data.i64 = filter->data.mi64;
+		bind_int64(bind, column, filter->data.mi64);
 		field = "A.id";
 		break;
 	case LIBOWL_FILTER_EPOCH:
-		bind->type = BIND_DOUBLE;
-		bind->data.dbl = filter->data.mdouble;
+		bind_double(bind, column, filter->data.mdouble);
 		field = "A.epoch";
 		break;
 	case LIBOWL_FILTER_NAME:
-		bind->type = BIND_TEXT;
-		bind->data.str = filter->data.str;
+		bind_text(bind, column, filter->data.str);
 		field = "S.name";
 		break;
 	case LIBOWL_FILTER_TYPE:
-		bind->type = BIND_INT;
-		bind->data.integer = filter->data.mint;
+		bind_int(bind, column, filter->data.mint);
 		field = "S.type_id";
 		break;
 	default:
 		return -EINVAL;
 	}
-	bind->col = column;
 	const int buf_size = 64;
 	char buf[buf_size];
 	const int bytes = snprintf(buf, buf_size, " %s%s %s (?)",
@@ -1024,10 +1087,16 @@ static int filter_to_statement_and_bind(const struct libowl_filter* filter, size
 
 enum read_options_flags {
 	READ_OPTION_DESCENDING = 1 << 0,
+	READ_OPTION_INTERVAL   = 1 << 1,
+	READ_OPTION_AVG        = 1 << 2,
+	READ_OPTION_MIN        = 1 << 3,
+	READ_OPTION_MAX        = 1 << 4,
+	READ_OPTION_AGGREGATE_MASK = (READ_OPTION_AVG | READ_OPTION_MIN | READ_OPTION_MAX),
 };
 
 struct read_options {
 	int flags;
+	double interval;
 };
 
 static int parse_options(struct read_options* ropts, const struct libowl_option* options, size_t size)
@@ -1036,14 +1105,44 @@ static int parse_options(struct read_options* ropts, const struct libowl_option*
 		return 0;
 
 	for (size_t i = 0; i < size; ++i) {
-		switch(options->type) {
+		switch(options[i].type) {
 		case LIBOWL_OPTION_DESCENDING:
 			ropts->flags |= READ_OPTION_DESCENDING;
+			break;
+		case LIBOWL_OPTION_INTERVAL:
+			ropts->flags |= READ_OPTION_INTERVAL;
+			ropts->interval = options[i].data.mdouble;
+			break;
+		case LIBOWL_OPTION_AVG:
+			ropts->flags |= READ_OPTION_AVG;
+			break;
+		case LIBOWL_OPTION_MIN:
+			ropts->flags |= READ_OPTION_MIN;
+			break;
+		case LIBOWL_OPTION_MAX:
+			ropts->flags |= READ_OPTION_MAX;
 			break;
 		default:
 			return -EINVAL;
 		}
 	}
+
+	/* Can't have more than 1 aggregate */
+	int aggregate_count = 0;
+	if ((ropts->flags & READ_OPTION_AVG) == READ_OPTION_AVG)
+			aggregate_count++;
+	if ((ropts->flags & READ_OPTION_MIN) == READ_OPTION_MIN)
+			aggregate_count++;
+	if ((ropts->flags & READ_OPTION_MAX) == READ_OPTION_MAX)
+			aggregate_count++;
+	if (aggregate_count > 1)
+		return -EINVAL;
+
+	/* Interval must have an aggregate */
+	if ((ropts->flags & READ_OPTION_INTERVAL) == READ_OPTION_INTERVAL
+			&& aggregate_count < 1)
+		return -EINVAL;
+
 	return 0;
 }
 
@@ -1069,8 +1168,12 @@ int libowl_read(struct libowl* owl, const struct libowl_option* options, size_t 
 		goto exit;
 
 	/* Allocate space for all required statement sections which will later be joined.
-	 * base + filters + order + limit */
-	const size_t part_size = 1 + filter_size + 1 + 1;
+	 * base1 + interval1 + base2 + filters + aggregate + order + limit */
+	const size_t aggregate_size = (ropts.flags & READ_OPTION_AGGREGATE_MASK) != 0
+									? 1 : 0;
+	const size_t interval_size = (ropts.flags & READ_OPTION_INTERVAL) == READ_OPTION_INTERVAL
+									? 1 : 0;
+	const size_t part_size = 1 + interval_size + 1 + filter_size + aggregate_size + 1 + 1;
 	parts = calloc(part_size ,sizeof(struct libowl_statement_part));
 	if (parts == NULL) {
 		r = -ENOMEM;
@@ -1078,45 +1181,92 @@ int libowl_read(struct libowl* owl, const struct libowl_option* options, size_t 
 	}
 
 	/* Allocate space for all binding instructions to statement
-	 * filters + limit */
-	const size_t bind_size = filter_size + 1;
+	 * filters + interval + limit */
+	const size_t bind_size = filter_size + interval_size + 1;
 	bind = malloc(sizeof(struct libowl_bind) * bind_size);
 	if (bind == NULL) {
 		r = -ENOMEM;
 		goto exit;
 	}
 
-	/* Base */
-	parts[0].str =
-		"SELECT "
-			"A.id,"
-			"S.type_id,"
-			"S.name,"
-			"A.value,"
-			"A.epoch"
+	size_t parts_pos = 0;
+	int bind_column = 1;
+	size_t bind_pos = 0;
+
+	/* base */
+	switch (ropts.flags & READ_OPTION_AGGREGATE_MASK) {
+	case READ_OPTION_AVG:
+		parts[parts_pos++].str =
+			"SELECT "
+				"MAX(A.id),"
+				"S.type_id,"
+				"S.name,"
+				"AVG(A.value),"
+				"MAX(A.epoch)";
+		break;
+	case READ_OPTION_MIN:
+		parts[parts_pos++].str =
+			"SELECT "
+				"MAX(A.id),"
+				"S.type_id,"
+				"S.name,"
+				"MIN(A.value),"
+				"MAX(A.epoch)";
+		break;
+	case READ_OPTION_MAX:
+		parts[parts_pos++].str =
+			"SELECT "
+				"MAX(A.id),"
+				"S.type_id,"
+				"S.name,"
+				"MAX(A.value), "
+				"MAX(A.epoch)";
+		break;
+	default:
+		parts[parts_pos++].str =
+			"SELECT "
+				"A.id,"
+				"S.type_id,"
+				"S.name,"
+				"A.value,"
+				"A.epoch";
+		break;
+	}
+
+	if ((ropts.flags & READ_OPTION_INTERVAL) == READ_OPTION_INTERVAL) {
+		parts[parts_pos++].str = ", CAST((A.epoch  * 1000 / (?)) AS INTEGER) AS interval";
+		bind_double(&bind[bind_pos++], bind_column++, ropts.interval);
+	}
+
+	parts[parts_pos++].str =
 		" FROM data as A"
 		" INNER JOIN sensors AS S on S.id = A.sensor_id"
 		" WHERE";
 
-	int bind_column = 1;
 	/* filters  */
 	for (size_t i = 0; i < filter_size; ++i) {
-		r = filter_to_statement_and_bind(&filters[i], i, bind_column++, &parts[i + 1], &bind[i]);
+		r = filter_to_statement_and_bind(&filters[i], i, bind_column++, &parts[parts_pos++], &bind[bind_pos++]);
 		if (r != 0) {
 			pr_err(owl, "invalid filter type: %d\n", filters[i].type);
 			goto exit;
 		}
 	}
 
+	/* Aggegate grouping */
+	if ((ropts.flags & READ_OPTION_AGGREGATE_MASK) != 0) {
+		if ((ropts.flags & READ_OPTION_INTERVAL) == READ_OPTION_INTERVAL)
+			parts[parts_pos++].str =" GROUP BY S.id, interval";
+		else
+			parts[parts_pos++].str =" GROUP BY S.id";
+	}
+
 	/* Add order */
 	const int is_descending = (ropts.flags & READ_OPTION_DESCENDING) == READ_OPTION_DESCENDING;
-	parts[part_size - 2].str = is_descending ? " ORDER BY A.id DESC" : " ORDER BY A.id ASC";
+	parts[parts_pos++].str = is_descending ? " ORDER BY A.id DESC" : " ORDER BY A.id ASC";
 
 	/* Add limit */
-	parts[part_size - 1].str = " LIMIT (?)";
-	bind[bind_size - 1].col = bind_column++;
-	bind[bind_size - 1].type = BIND_INT;
-	bind[bind_size - 1].data.integer = (int) size;
+	parts[parts_pos++].str = " LIMIT (?)";
+	bind_int(&bind[bind_pos++], bind_column++, (int) size);
 
 	/* Assemble statement */
 	sql = join_statement(parts, part_size);

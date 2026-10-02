@@ -127,12 +127,23 @@ int libowl_filter_type(struct libowl_filter* filter, int op, int type);
 
 struct libowl_option {
 	int type;
+	union {
+		int64_t mdouble;
+	} data;
 };
 
 /* Initialize libowl_option using utility functions.
  * Will return 0 for success or negative errno for error. */
 /* Return data in descending order, instead of default ascending */
 int libowl_option_descending(struct libowl_option* option);
+/* Return data at fixed interval in fractional seconds, must be used together with one of
+ * libowl_option_[avg/max/min](). Minimum interval is 1ms (i.e. 0.001) */
+int libowl_option_interval(struct libowl_option* option, double interval);
+/* Return avg, min or max for the full filtered range or in intervals
+ * if used with libowl_option_interval().*/
+int libowl_option_avg(struct libowl_option* option);
+int libowl_option_min(struct libowl_option* option);
+int libowl_option_max(struct libowl_option* option);
 
 /* Read from libowl based on "filters" of "filter_size" into "data" of "size"
  * with "options" of "option_size".
