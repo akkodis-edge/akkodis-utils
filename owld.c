@@ -57,6 +57,7 @@ static const cyaml_strval_t sensor_config_type_strings[] = {
 	{"voltage", LIBOWL_SENSOR_VOLTAGE},
 	{"current", LIBOWL_SENSOR_CURRENT},
 	{"ratio", LIBOWL_SENSOR_RATIO},
+	{"counter", LIBOWL_SENSOR_COUNTER},
 };
 
 static const cyaml_strval_t sensor_config_methods_strings[] = {
@@ -108,6 +109,7 @@ enum owl_sys_type {
 	OWLD_SYS_NONE,
 	OWLD_SYS_CPU_USAGE,
 	OWLD_SYS_MEM_USAGE,
+	OWLD_SYS_UPTIME,
 };
 
 struct owl_sys_device {
@@ -153,6 +155,9 @@ static int owl_sys_read(int* value, void* priv)
 		*value = used * PERCENTAGE_TO_PPM;
 		break;
 	}
+	case OWLD_SYS_UPTIME:
+		*value = sinfo.uptime > INT_MAX ? INT_MAX : (int) sinfo.uptime;
+		break;
 	default:
 		return -EINVAL;
 	}
@@ -176,9 +181,23 @@ static int create_owl_sys_device(struct sensor_config* scfg, struct owl_device* 
 		type = OWLD_SYS_CPU_USAGE;
 	else if (strcmp(scfg->device, "mem-usage") == 0)
 		type = OWLD_SYS_MEM_USAGE;
+	else if (strcmp(scfg->device, "uptime") == 0)
+		type = OWLD_SYS_UPTIME;
 
-	if (type == OWLD_SYS_NONE)
+	switch (type) {
+	case OWLD_SYS_CPU_USAGE:
+	case OWLD_SYS_MEM_USAGE:
+		if (scfg->type != LIBOWL_SENSOR_RATIO)
+			return -EINVAL;
+		break;
+	case OWLD_SYS_UPTIME:
+		if (scfg->type != LIBOWL_SENSOR_COUNTER)
+			return -EINVAL;
+		break;
+	default:
 		return -EINVAL;
+	}
+
 
 	dev->free = owl_sys_free;
 	dev->priv = calloc(1, sizeof(struct owl_sys_device));
