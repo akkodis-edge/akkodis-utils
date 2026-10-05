@@ -937,16 +937,18 @@ int libowl_sensor_data_free(struct libowl_sensor_data* data)
 	return 0;
 }
 
+/* Used as array index, modify with care */
 enum libowl_sensor_filter_type {
 	LIBOWL_FILTER_EPOCH,
 	LIBOWL_FILTER_INDEX,
 	LIBOWL_FILTER_NAME,
 	LIBOWL_FILTER_TYPE,
+	LIBOWL_FILTER_ARRAY_SIZE,
 };
 
 int libowl_filter_index(struct libowl_filter* filter, int op, int64_t index)
 {
-	if (filter == NULL || op > LIBOWL_OP_NOT_EQUAL)
+	if (filter == NULL || op > LIBOWL_OP_IN)
 		return -EINVAL;
 	filter->type = LIBOWL_FILTER_INDEX;
 	filter->op = op;
@@ -956,7 +958,7 @@ int libowl_filter_index(struct libowl_filter* filter, int op, int64_t index)
 
 int libowl_filter_epoch(struct libowl_filter* filter, int op, double epoch)
 {
-	if (filter == NULL || op > LIBOWL_OP_NOT_EQUAL)
+	if (filter == NULL || op > LIBOWL_OP_IN)
 		return -EINVAL;
 	filter->type = LIBOWL_FILTER_EPOCH;
 	filter->op = op;
@@ -966,7 +968,7 @@ int libowl_filter_epoch(struct libowl_filter* filter, int op, double epoch)
 
 int libowl_filter_name(struct libowl_filter* filter, int op, const char* name)
 {
-	if (filter == NULL || op > LIBOWL_OP_NOT_EQUAL || name == NULL)
+	if (filter == NULL || op > LIBOWL_OP_IN || name == NULL)
 		return -EINVAL;
 	filter->type = LIBOWL_FILTER_NAME;
 	filter->op = op;
@@ -976,7 +978,7 @@ int libowl_filter_name(struct libowl_filter* filter, int op, const char* name)
 
 int libowl_filter_type(struct libowl_filter* filter, int op, int type)
 {
-	if (filter == NULL || op > LIBOWL_OP_NOT_EQUAL || libowl_sensor_type_str(type) == NULL)
+	if (filter == NULL || op > LIBOWL_OP_IN || libowl_sensor_type_str(type) == NULL)
 		return -EINVAL;
 	filter->type = LIBOWL_FILTER_TYPE;
 	filter->op = op;
@@ -1051,43 +1053,136 @@ static const char* op_to_str(int op)
 		return "==";
 	case LIBOWL_OP_NOT_EQUAL:
 		return "!=";
+	case LIBOWL_OP_IN:
+		return "IN";
 	}
-	return "XX";
+	return NULL;
 }
 
-static int filter_to_statement_and_bind(const struct libowl_filter* filter, size_t index, int column, struct libowl_statement_part* part, struct libowl_bind* bind)
+static const char* filter_type_to_field(int type)
 {
-	char *field = NULL;
+	switch (type) {
+	case LIBOWL_FILTER_INDEX:
+		return "A.id";
+	case LIBOWL_FILTER_EPOCH:
+		return "A.epoch";
+	case LIBOWL_FILTER_NAME:
+		return "S.name";
+	case LIBOWL_FILTER_TYPE:
+		return "S.type_id";
+	}
+	return NULL;
+}
+
+static void filter_bind(struct libowl_bind* bind, int column, const struct libowl_filter* filter)
+{
 	switch (filter->type) {
 	case LIBOWL_FILTER_INDEX:
 		bind_int64(bind, column, filter->data.mi64);
-		field = "A.id";
 		break;
 	case LIBOWL_FILTER_EPOCH:
 		bind_double(bind, column, filter->data.mdouble);
-		field = "A.epoch";
 		break;
 	case LIBOWL_FILTER_NAME:
 		bind_text(bind, column, filter->data.str);
-		field = "S.name";
 		break;
 	case LIBOWL_FILTER_TYPE:
 		bind_int(bind, column, filter->data.mint);
-		field = "S.type_id";
 		break;
-	default:
-		return -EINVAL;
 	}
+}
+
+static char* allocate_filter_part(const char* prefix, const char* field, const char* op, const char* suffix)
+{
 	const int buf_size = 64;
 	char buf[buf_size];
-	const int bytes = snprintf(buf, buf_size, " %s%s %s (?)",
-			index > 0 ? "AND " : "", field, op_to_str(filter->op));
+	const int bytes = snprintf(buf, buf_size, " %s%s %s %s",
+			prefix, field, op, suffix);
 	if (bytes < 0 || bytes >= buf_size)
-		return -EINVAL;
-	part->str = strdup(buf);
-	if (part->str == NULL)
-		return -ENOMEM;
-	part->options |= STATEMENT_OPTION_FREE;
+		return NULL;
+	return strdup(buf);
+}
+
+struct filters_data {
+	size_t part_count; /* required space in parts buffer */
+	size_t bind_count; /* required space in bind buffer */
+};
+/* if part or bind are NULL, then only returns filters_data and does not write to neither bind nor part */
+static int filters_to_statement_and_bind(struct filters_data* retdata, const struct libowl_filter* filters, size_t filters_size, int start_column, struct libowl_statement_part* part, struct libowl_bind* bind)
+{
+	const int allow_write = bind != NULL && part != NULL;
+	int add_and_prefix = 0;
+	size_t part_count = 0;
+	size_t bind_count = 0;
+	size_t op_in_count_by_type[LIBOWL_FILTER_ARRAY_SIZE];
+	memset(op_in_count_by_type, 0, sizeof(op_in_count_by_type));
+
+	/* Handle all simple binds and count LIBOWL_OP_IN per type */
+	for (size_t i = 0; i < filters_size; ++i) {
+		/* invalid type */
+		if (filter_type_to_field(filters[i].type) == NULL
+				|| op_to_str(filters[i].op) == NULL)
+			return -EINVAL;
+		/* Only count in first pass if LIBOWL_OP_IN */
+		if (filters[i].op == LIBOWL_OP_IN) {
+			op_in_count_by_type[filters[i].type]++;
+			continue;
+		}
+		/* Bind if simple */
+		if (allow_write) {
+			part[part_count].str = allocate_filter_part(add_and_prefix ? "AND " : "",
+					filter_type_to_field(filters[i].type), op_to_str(filters[i].op), "(?)");
+			if (part[part_count].str == NULL)
+				return -ENOMEM;
+			part[part_count].options |= STATEMENT_OPTION_FREE;
+			filter_bind(&bind[bind_count], start_column + bind_count, &filters[i]);
+		}
+		part_count++;
+		bind_count++;
+		add_and_prefix = 1;
+	}
+
+	/* Handle LIBOWL_OP_IN */
+	for (size_t j = 0; j < LIBOWL_FILTER_ARRAY_SIZE; ++j) {
+		/* skip if no ops to handle */
+		if (op_in_count_by_type[j] < 1)
+			continue;
+
+		/* add start parenthesis */
+		if (allow_write) {
+			part[part_count].str = allocate_filter_part(add_and_prefix ? "AND " : "",
+					filter_type_to_field(j), op_to_str(LIBOWL_OP_IN), "(");
+			if (part[part_count].str == NULL)
+				return -ENOMEM;
+			part[part_count].options |= STATEMENT_OPTION_FREE;
+		}
+		part_count++;
+
+		/* Add values */
+		int first_value = 1;
+		for (size_t i = 0; i < filters_size; ++i) {
+			/* skip wrong types or ops */
+			if (filters[i].type != (int) j || filters[i].op != LIBOWL_OP_IN)
+				continue;
+			if (allow_write) {
+				part[part_count].str = first_value ? "(?)" : ", (?)";
+				filter_bind(&bind[bind_count], start_column + bind_count, &filters[i]);
+			}
+			part_count++;
+			bind_count++;
+			first_value = 0;
+		}
+		/* Add end parenthesis */
+		if (allow_write) {
+			part[part_count].str = ")";
+		}
+		part_count++;
+		add_and_prefix = 1;
+	}
+
+	retdata->part_count = part_count;
+	retdata->bind_count = bind_count;
+
 	return 0;
 }
 
@@ -1156,7 +1251,7 @@ int libowl_read(struct libowl* owl, const struct libowl_option* options, size_t 
 									const struct libowl_filter* filters, size_t filter_size,
 									struct libowl_sensor_data* data, size_t size)
 {
-	if (owl == NULL || filters == NULL || filter_size == 0 || data == NULL || size == 0 || size > INT_MAX)
+	if (owl == NULL || filters == NULL || filter_size == 0 || filter_size > INT_MAX || data == NULL || size == 0 || size > INT_MAX)
 		return -EINVAL;
 
 	struct libowl_statement_part *parts = NULL;
@@ -1173,13 +1268,20 @@ int libowl_read(struct libowl* owl, const struct libowl_option* options, size_t 
 	if (r != 0)
 		goto exit;
 
+	/* count parts and bind sections required by filters */
+	struct filters_data fdata;
+	memset(&fdata, 0, sizeof(fdata));
+	r = filters_to_statement_and_bind(&fdata, filters, filter_size, 0, NULL, NULL);
+	if (r != 0)
+		goto exit;
+
 	/* Allocate space for all required statement sections which will later be joined.
 	 * base1 + interval1 + base2 + filters + aggregate + order + limit */
 	const size_t aggregate_size = (ropts.flags & READ_OPTION_AGGREGATE_MASK) != 0
 									? 1 : 0;
 	const size_t interval_size = (ropts.flags & READ_OPTION_INTERVAL) == READ_OPTION_INTERVAL
 									? 1 : 0;
-	const size_t part_size = 1 + interval_size + 1 + filter_size + aggregate_size + 1 + 1;
+	const size_t part_size = 1 + interval_size + 1 + fdata.part_count + aggregate_size + 1 + 1;
 	parts = calloc(part_size ,sizeof(struct libowl_statement_part));
 	if (parts == NULL) {
 		r = -ENOMEM;
@@ -1188,7 +1290,7 @@ int libowl_read(struct libowl* owl, const struct libowl_option* options, size_t 
 
 	/* Allocate space for all binding instructions to statement
 	 * filters + interval + limit */
-	const size_t bind_size = filter_size + interval_size + 1;
+	const size_t bind_size = fdata.bind_count + interval_size + 1;
 	bind = malloc(sizeof(struct libowl_bind) * bind_size);
 	if (bind == NULL) {
 		r = -ENOMEM;
@@ -1250,13 +1352,12 @@ int libowl_read(struct libowl* owl, const struct libowl_option* options, size_t 
 		" WHERE";
 
 	/* filters  */
-	for (size_t i = 0; i < filter_size; ++i) {
-		r = filter_to_statement_and_bind(&filters[i], i, bind_column++, &parts[parts_pos++], &bind[bind_pos++]);
-		if (r != 0) {
-			pr_err(owl, "invalid filter type: %d\n", filters[i].type);
-			goto exit;
-		}
-	}
+	r = filters_to_statement_and_bind(&fdata, filters, filter_size, bind_column, &parts[parts_pos], &bind[bind_pos]);
+	if (r != 0)
+		goto exit;
+	bind_column += fdata.bind_count;
+	bind_pos += fdata.bind_count;
+	parts_pos += fdata.part_count;
 
 	/* Aggegate grouping */
 	if ((ropts.flags & READ_OPTION_AGGREGATE_MASK) != 0) {
