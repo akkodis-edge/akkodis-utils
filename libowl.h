@@ -131,7 +131,7 @@ int libowl_filter_type(struct libowl_filter* filter, int op, int type);
 struct libowl_option {
 	int type;
 	union {
-		int64_t mdouble;
+		double mdouble;
 	} data;
 };
 
