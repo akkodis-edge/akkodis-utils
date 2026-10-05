@@ -104,6 +104,8 @@ const char* libowl_sensor_type_str(int type)
 		return "CURRENT";
 	case LIBOWL_SENSOR_RATIO:
 		return "RATIO";
+	case LIBOWL_SENSOR_COUNTER:
+		return "COUNTER";
 	default:
 		return NULL;
 	}

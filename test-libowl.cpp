@@ -66,6 +66,7 @@ TEST_CASE("sensor types") {
 		{.name = "VOLTAGE", .type = LIBOWL_SENSOR_VOLTAGE},
 		{.name = "CURRENT", .type = LIBOWL_SENSOR_CURRENT},
 		{.name = "RATIO", .type = LIBOWL_SENSOR_RATIO},
+		{.name = "COUNTER", .type = LIBOWL_SENSOR_COUNTER},
 	};
 	for (const auto& sensor : sensors) {
 		/* confirm name */
