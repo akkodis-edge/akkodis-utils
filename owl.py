@@ -15,30 +15,40 @@ from libowl import LibOwl, sensor_type_name, Filters, Options
 from libowl import LIBOWL_OP_GREATER_THAN, LIBOWL_OP_LESS_EQUAL, LIBOWL_OP_IN
 from libowl import SENSOR_TEMPERATURE, SENSOR_RATIO, SENSOR_COUNTER
 
-def plotv2(datapoints, x_size, y_size):
+def plot_transform(type):
+    if type == SENSOR_TEMPERATURE:
+        return '/1000'
+    elif type == SENSOR_RATIO:
+        return '/10000'
+    else:
+        return ''
+
+def plot_datapoints(datapoints, width, height, yformat):
     input = bytearray()
     datablock_names = []
     for name in datapoints:
-        datablock_names.append(name)
+        # get type from first reading, second tuple value
+        type = datapoints[name][0][1]
+        datablock_names.append((name, plot_transform(type)))
         input += f'$Data{len(datablock_names)} << EOD\n'.encode('utf-8')
         for (epoch, type, value) in datapoints[name]:
             input += f'{epoch} {value}\n'.encode('utf-8')
         input += b'EOD\n'
     input += \
 f'''
-set terminal dumb ansi256 {x_size},{y_size}
+set terminal dumb ansi256 {width},{height}
 set xdata time
-set yrange[0:]
 set timefmt "%s"
 set key outside
 set format x ""
+set format y "{yformat}"
 set xtics nomirror time
 set ytics nomirror
 '''.encode('utf-8')
 
-    for index, name in enumerate(datablock_names):
+    for index, (name, transform) in enumerate(datablock_names):
         prefix = 'plot' if index == 0 else ','
-        input += f'{prefix} $Data{index+1} using 1:2 with line title "{name}"'.encode('utf-8')
+        input += f'{prefix} $Data{index+1} using 1:(column(2){transform}) with line title "{name}"'.encode('utf-8')
     input += b'\n'
 
     try:
@@ -48,16 +58,17 @@ set ytics nomirror
         print(e, e.stdout, e.stderr)
 
 class Gnuplot:
-    def __init__(self, datapoints):
+    def __init__(self, datapoints, yformat=''):
         self.datapoints = datapoints
         self.prev_widht = 0
         self.prev_height = 0
         self.prev_plot = None
+        self.yformat = yformat
     def __rich_console__(self, console, options):
         if self.prev_widht == options.max_width and self.prev_height == options.max_height and self.prev_plot != None:
             return self.prev_plot
-        plot = plotv2(self.datapoints, options.max_width, options.max_height).decode('utf-8')
-        plot = plot.rstrip()
+        plot = plot_datapoints(self.datapoints, width=options.max_width, height=options.max_height, yformat=self.yformat)
+        plot = plot.decode('utf-8').rstrip()
         self.prev_plot = Text.from_ansi(plot)
         self.prev_width = options.max_width
         self.prev_height = options.max_height
@@ -108,8 +119,8 @@ def read_datapoints(db, datapoints, points, types, time_from, time_to):
     for name in to_delete:
         del datapoints[name]
 
-def update_plot(root, datapoints, time_from, time_to):
-    root['plot'].update(Gnuplot(datapoints))
+def update_plot(root, datapoints, time_from, time_to, yformat):
+    root['plot'].update(Gnuplot(datapoints, yformat))
     info_text = Table.grid(expand=True)
     info_text.add_column(justify='left')
     info_text.add_column(justify='right')
@@ -156,9 +167,9 @@ def main():
             time_now = time.time()
             time_from = time_now - (60*60)
             read_datapoints(db, temp_datapoints, 100, [SENSOR_TEMPERATURE], time_from, time_now)
-            update_plot(layout['temp'], temp_datapoints, time_from, time_now)
+            update_plot(layout['temp'], temp_datapoints, time_from, time_now, '%.1fC')
             read_datapoints(db, ratio_datapoints, 100, [SENSOR_RATIO], time_from, time_now)
-            update_plot(layout['ratio'], ratio_datapoints, time_from, time_now)
+            update_plot(layout['ratio'], ratio_datapoints, time_from, time_now, '%.1f%%')
             time.sleep(1)
 
     sys.exit(1)
