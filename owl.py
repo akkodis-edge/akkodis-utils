@@ -26,7 +26,7 @@ def plotv2(datapoints, x_size, y_size):
         input += b'EOD\n'
     input += \
 f'''
-set terminal dumb ansi256 size {x_size}, {y_size - 40}
+set terminal dumb ansi256 {x_size},{y_size}
 set xdata time
 set yrange[0:]
 set timefmt "%s"
@@ -54,11 +54,13 @@ class Gnuplot:
         self.prev_height = 0
         self.prev_plot = None
     def __rich_console__(self, console, options):
-        if self.prev_widht == options.size.width and self.prev_height == options.size.height and self.prev_plot != None:
+        if self.prev_widht == options.max_width and self.prev_height == options.max_height and self.prev_plot != None:
             return self.prev_plot
-        self.prev_plot = Text.from_ansi(plotv2(self.datapoints, options.size.width, options.size.height).decode('utf-8'))
-        self.prev_width = options.size.width
-        self.prev_height = options.size.height
+        plot = plotv2(self.datapoints, options.max_width, options.max_height).decode('utf-8')
+        plot = plot.rstrip()
+        self.prev_plot = Text.from_ansi(plot)
+        self.prev_width = options.max_width
+        self.prev_height = options.max_height
         return self.prev_plot
 
 def read_datapoints(db, datapoints, points, types, time_from, time_to):
