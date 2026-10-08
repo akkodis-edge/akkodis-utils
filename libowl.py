@@ -166,7 +166,7 @@ class Options():
 class LibOwl:
     def __init__(self, path):
         self.owl = None
-        self.lib = cdll.LoadLibrary("libowl.so")
+        self.lib = cdll.LoadLibrary("libowl.so.1")
         self.owl = c_void_p()
         ret = self.lib.libowl_open(byref(self.owl), c_char_p(path.encode('utf-8')), 0)
         if ret != 0:
