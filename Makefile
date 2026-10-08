@@ -74,7 +74,7 @@ $(BUILD)/atcli: atcli.py
 	install -m 0755 $< $@
 
 $(BUILD)/libowl.so.1: $(BUILD)/libowl.o
-	$(CC) -o $@ $^ -shared $(LDFLAGS) -lsqlite3
+	$(CC) -o $@ $^ -shared -Wl,-soname,libowl.so.1 $(LDFLAGS) -lsqlite3
 
 $(BUILD)/libowl.so: $(BUILD)/libowl.so.1
 	ln -sf libowl.so.1 $@
