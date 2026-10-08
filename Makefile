@@ -7,6 +7,7 @@ includedir ?= $(prefix)/include
 bindir ?= $(exec_prefix)/bin
 sysconfdir ?= $(prefix)/etc
 systemd_system_unitdir ?= $(libdir)/systemd/system
+python3_sitepackages_dir ?= $(libdir)/python3/site-packages
 
 CFLAGS += -Wall -Wextra -Werror -std=gnu17 -pedantic -O3 -D_GNU_SOURCE -D_TIME_BITS=64 -D_FILE_OFFSET_BITS=64 -fPIC
 CXXFLAGS += -Wall -Wextra -Werror -std=gnu++20 -pedantic -O3 -I$(BUILD) -D_TIME_BITS=64 -D_FILE_OFFSET_BITS=64 -fPIC
@@ -52,11 +53,12 @@ ifeq ($(WITH_OWL), 1)
 ifneq ($(WITH_LIBOWL),1)
 $(error "ERROR: owl requires WITH_LIBOWL=1")
 endif
+	ALL_TARGETS_PYLIB += libowl.py
 	ALL_TARGETS_BIN += owl
 endif
 
 .PHONY: all $(ALL_TARGETS_BIN)
-all: $(ALL_TARGETS_BIN) $(ALL_TARGETS_SYSTEMD) $(ALL_TARGETS_LIB) $(ALL_TARGETS_INC)
+all: $(ALL_TARGETS_BIN) $(ALL_TARGETS_SYSTEMD) $(ALL_TARGETS_LIB) $(ALL_TARGETS_INC) $(ALL_TARGETS_PYLIB)
 
 $(ALL_TARGETS_BIN): %: $(BUILD)/%
 
@@ -80,6 +82,10 @@ $(BUILD)/libowl.so: $(BUILD)/libowl.so.1
 $(BUILD)/owl: owl.py
 	mkdir -p $(BUILD)
 	install -m 0755 $< $@
+
+$(BUILD)/libowl.py: libowl.py
+	mkdir -p $(BUILD)
+	install -m 0644 $< $@
 
 $(BUILD)/owld: $(BUILD)/owld.o $(BUILD)/libowl.so
 	$(CC) -o $@ $^ $(LDFLAGS) -L $(BUILD) -lcyaml -liio -lowl
@@ -114,9 +120,10 @@ ALL_TARGETS_BIN_INSTALL = $(patsubst %, %.bin.install, $(ALL_TARGETS_BIN))
 ALL_TARGETS_SYSTEMD_INSTALL = $(patsubst %, %.systemd.install, $(ALL_TARGETS_SYSTEMD))
 ALL_TARGETS_LIB_INSTALL = $(patsubst %, %.lib.install, $(ALL_TARGETS_LIB))
 ALL_TARGETS_INC_INSTALL = $(patsubst %, %.inc.install, $(ALL_TARGETS_INC))
+ALL_TARGETS_PYLIB_INSTALL = $(patsubst %, %.pylib.install, $(ALL_TARGETS_PYLIB))
 
 .PHONY: install
-install: $(ALL_TARGETS_BIN_INSTALL) $(ALL_TARGETS_SYSTEMD_INSTALL) $(ALL_TARGETS_LIB_INSTALL) $(ALL_TARGETS_INC_INSTALL)
+install: $(ALL_TARGETS_BIN_INSTALL) $(ALL_TARGETS_SYSTEMD_INSTALL) $(ALL_TARGETS_LIB_INSTALL) $(ALL_TARGETS_INC_INSTALL) $(ALL_TARGETS_PYLIB_INSTALL)
 
 .PHONY:
 %.bin.install: $(BUILD)/%
@@ -134,6 +141,11 @@ install: $(ALL_TARGETS_BIN_INSTALL) $(ALL_TARGETS_SYSTEMD_INSTALL) $(ALL_TARGETS
 	# symlinks are dereferenced by install, use cp
 	chmod 0644 $<
 	cp -d $< $(DESTDIR)$(libdir)/
+
+.PHONY:
+%.pylib.install: $(BUILD)/%
+	install -d $(DESTDIR)$(python3_sitepackages_dir)
+	install -m 0644 $< $(DESTDIR)$(python3_sitepackages_dir)
 
 .PHONY:
 %.inc.install: %
