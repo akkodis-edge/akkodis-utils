@@ -1,9 +1,13 @@
 #!/usr/bin/env python3
 
 import sys
+import os
 import time
 import argparse
 import subprocess
+import termios
+import tty
+import select
 from datetime import datetime
 from rich.live import Live
 from rich.console import Console
@@ -75,6 +79,9 @@ class Gnuplot:
         return self.prev_plot
 
 def read_datapoints(db, datapoints, points, types, time_from, time_to):
+    '''
+    Return True if data updated or false if not
+    '''
     last_index = 0
     # Calculate interval per datapoint
     interval = (time_to - time_from) / points
@@ -84,6 +91,7 @@ def read_datapoints(db, datapoints, points, types, time_from, time_to):
     options = Options()
     options.interval(interval)
     options.avg()
+    updated = 0
     while True:
         filters = Filters()
         filters.index(LIBOWL_OP_GREATER_THAN, last_index)
@@ -92,6 +100,10 @@ def read_datapoints(db, datapoints, points, types, time_from, time_to):
         filters.epoch(LIBOWL_OP_GREATER_THAN, time_from)
         filters.epoch(LIBOWL_OP_LESS_EQUAL, time_to)
         data = db.read(filters, options, 1000)
+        updated += len(data)
+        # no new data available
+        if updated == 0 and len(data) == 0:
+            return False
         # Add sensor values to datapoints
         for name, index, epoch, type, value in data:
             if name not in datapoints:
@@ -118,6 +130,7 @@ def read_datapoints(db, datapoints, points, types, time_from, time_to):
 
     for name in to_delete:
         del datapoints[name]
+    return True
 
 def update_plot(root, datapoints, time_from, time_to, yformat):
     root['plot'].update(Gnuplot(datapoints, yformat))
@@ -129,6 +142,147 @@ def update_plot(root, datapoints, time_from, time_to, yformat):
         Text(datetime.fromtimestamp(time_to).strftime('%Y-%m-%d %H:%M:%S.%f')),
     )
     root['info'].update(info_text)
+
+KEY_UP = 0
+KEY_LEFT = 1
+KEY_RIGHT = 2
+KEY_DOWN = 3
+
+class Input():
+    def __init__(self):
+        self.orig = None
+        self.orig = termios.tcgetattr(sys.stdin)
+        # disable buffering
+        tty.setcbreak(sys.stdin, when=termios.TCSANOW)
+        self.fds = select.poll()
+        self.fds.register(sys.stdin.fileno(), select.POLLIN)
+    def __del__(self):
+        if self.orig != None:
+            termios.tcsetattr(sys.stdin, termios.TCSANOW, self.orig)
+    def __read_byte(self):
+        if len(self.fds.poll(0)) < 1:
+            return None
+        value = sys.stdin.buffer.read1(1)
+        if len(value) < 1:
+            return None
+        return value
+    def getch(self):
+        '''
+        Extremely basic ANSI escape code parses to detect KEY_[UP,LEFT,RIGHT,DOWN].
+        '''
+        value = self.__read_byte()
+        # check if escape sequence, if not, return value
+        if value != b'\x1b':
+            return value
+        # check if control sequence introducer "[" and skip it
+        value = self.__read_byte()
+        if value == b'[':
+            value = self.__read_byte()
+        # check for key up down
+        if value == b'A':
+            return KEY_UP
+        elif value == b'D':
+            return KEY_LEFT
+        elif value == b'C':
+            return KEY_RIGHT
+        elif value == b'B':
+            return KEY_DOWN
+        # return value for unknown
+        return value
+
+POS_MIN = 0
+POS_YEAR = 0
+POS_MONTH = 1
+POS_WEEK = 2
+POS_DAY = 3
+POS_HOUR = 4
+POS_MINUTE = 5
+POS_MAX = 5
+
+class Control:
+    def __init__(self):
+        self.input = Input()
+        self.cursor_pos = POS_HOUR
+        self.cursor_sel = POS_HOUR
+    def process_input(self):
+        while True:
+            char = self.input.getch()
+            if char == None:
+                break
+            elif char == KEY_UP:
+                pass
+            elif char == KEY_LEFT:
+                if self.cursor_pos > POS_MIN:
+                    self.cursor_pos -= 1
+            elif char == KEY_RIGHT:
+                if self.cursor_pos < POS_MAX:
+                    self.cursor_pos += 1
+            elif char == KEY_DOWN:
+                pass
+            elif char == b' ': # SPACE
+                self.cursor_sel = self.cursor_pos
+    def __generate_button(self, pos):
+        if pos == POS_YEAR:
+            name = ' YEAR '
+        elif pos == POS_MONTH:
+            name = ' MONTH '
+        elif pos == POS_WEEK:
+            name = ' WEEK '
+        elif pos == POS_DAY:
+            name = ' DAY '
+        elif pos == POS_HOUR:
+            name = ' HOUR '
+        elif pos == POS_MINUTE:
+            name = ' MINUTE '
+        else:
+            name = '  UNKNOWN  '
+        if self.cursor_pos == pos and self.cursor_sel == pos:
+            color = 'bold blue on magenta'
+        elif self.cursor_pos == pos:
+            color = 'bold magenta'
+        elif self.cursor_sel == pos:
+            color = 'blue on magenta'
+        else:
+            color = 'blue'
+        return (name, color)
+    def footer(self):
+        grid = Table.grid(expand=True)
+        grid.add_column(justify='left')
+        grid.add_column(justify='center')
+        grid.add_row()
+        color_selected = 'bold green on magenta'
+        color_other = 'blue'
+        grid.add_row('', Text.assemble(
+            self.__generate_button(POS_YEAR),
+            ('  '),
+            self.__generate_button(POS_MONTH),
+            ('  '),
+            self.__generate_button(POS_WEEK),
+            ('  '),
+            self.__generate_button(POS_DAY),
+            ('  '),
+            self.__generate_button(POS_HOUR),
+            ('  '),
+            self.__generate_button(POS_MINUTE),
+        ))
+        grid.add_row('Akkodis Edge')
+        return grid
+    def plot_time_range(self):
+        time_now = time.time()
+        if self.cursor_sel == POS_YEAR:
+            return (time_now - (60*60*24*365), time_now)
+        elif self.cursor_sel == POS_MONTH:
+            return (time_now - (60*60*24*30), time_now)
+        elif self.cursor_sel == POS_WEEK:
+            return (time_now - (60*60*24*7), time_now)
+        elif self.cursor_sel == POS_DAY:
+            return (time_now - (60*60*24), time_now)
+        elif self.cursor_sel == POS_HOUR:
+            return (time_now - (60*60), time_now)
+        elif self.cursor_sel == POS_MINUTE:
+            return (time_now - (60), time_now)
+        else:
+            raise RuntimeError('Invalid plotting range')
 
 def main():
     parser = argparse.ArgumentParser(description='Logger separated in daemon writer and client reader(s)')
@@ -160,16 +314,18 @@ def main():
         Layout(name='plot'),
         Layout(name='info', size=1),
     )
-    layout["footer"].update('Akkodis Edge')
+
+    control = Control()
 
     with Live(layout, refresh_per_second=4) as live:
         while True:
-            time_now = time.time()
-            time_from = time_now - (60*60)
-            read_datapoints(db, temp_datapoints, 100, [SENSOR_TEMPERATURE], time_from, time_now)
-            update_plot(layout['temp'], temp_datapoints, time_from, time_now, '%.1fC')
-            read_datapoints(db, ratio_datapoints, 100, [SENSOR_RATIO], time_from, time_now)
-            update_plot(layout['ratio'], ratio_datapoints, time_from, time_now, '%.1f%%')
+            control.process_input()
+            layout['footer'].update(control.footer())
+            (time_from, time_to) = control.plot_time_range()
+            if read_datapoints(db, temp_datapoints, 100, [SENSOR_TEMPERATURE], time_from, time_to):
+                update_plot(layout['temp'], temp_datapoints, time_from, time_to, '%.1fC')
+            if read_datapoints(db, ratio_datapoints, 100, [SENSOR_RATIO], time_from, time_to):
+                update_plot(layout['ratio'], ratio_datapoints, time_from, time_to, '%.1f%%')
             time.sleep(1)
 
     sys.exit(1)
