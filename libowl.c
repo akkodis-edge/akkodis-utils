@@ -1247,18 +1247,29 @@ static int parse_options(struct read_options* ropts, const struct libowl_option*
 	return 0;
 }
 
-int libowl_read(struct libowl* owl, const struct libowl_option* options, size_t option_size,
-									const struct libowl_filter* filters, size_t filter_size,
-									struct libowl_sensor_data* data, size_t size)
+struct libowl_query {
+	sqlite3_stmt *stmt;
+};
+
+static int libowl_query_free(struct libowl_query* query)
 {
-	if (owl == NULL || filters == NULL || filter_size == 0 || filter_size > INT_MAX || data == NULL || size == 0 || size > INT_MAX)
+	if (query->stmt != NULL) {
+		sqlite3_finalize(query->stmt);
+		query->stmt = NULL;
+	}
+	return 0;
+}
+
+static int libowl_query_create(struct libowl* owl, struct libowl_query* query, int limit,
+								const struct libowl_option* options, size_t option_size,
+								const struct libowl_filter* filters, size_t filter_size)
+{
+	if (owl == NULL || query == NULL || limit < 1 || filters == NULL || filter_size == 0 || filter_size > INT_MAX)
 		return -EINVAL;
 
 	struct libowl_statement_part *parts = NULL;
 	struct libowl_bind *bind = NULL;
-	sqlite3_stmt *stmt = NULL;
 	char *sql = NULL;
-	size_t pos = 0;
 	int r = 0;
 
 	/* parse options */
@@ -1373,7 +1384,7 @@ int libowl_read(struct libowl* owl, const struct libowl_option* options, size_t 
 
 	/* Add limit */
 	parts[parts_pos++].str = " LIMIT (?)";
-	bind_int(&bind[bind_pos++], bind_column++, (int) size);
+	bind_int(&bind[bind_pos++], bind_column++, (int) limit);
 
 	/* Assemble statement */
 	sql = join_statement(parts, part_size);
@@ -1383,35 +1394,13 @@ int libowl_read(struct libowl* owl, const struct libowl_option* options, size_t 
 	}
 
 	/* compile statement and bind variables */
-	stmt = libowl_prepare_bind(owl, sql, bind, bind_size);
-	if (stmt == NULL) {
+	query->stmt = libowl_prepare_bind(owl, sql, bind, bind_size);
+	if (query->stmt == NULL) {
 		r = -EBADF;
 		goto exit;
 	}
 
-	/* retrieve data */
-	do {
-		r = sqlite3_step(stmt);
-		switch (r) {
-		case SQLITE_DONE:
-			break;
-		case SQLITE_ROW:
-			data[pos].index = sqlite3_column_int64(stmt, 0);
-			data[pos].type = sqlite3_column_int(stmt, 1);
-			data[pos].name = strdup((const char*) sqlite3_column_text(stmt, 2));
-			data[pos].value = sqlite3_column_int64(stmt, 3);
-			data[pos].epoch = sqlite3_column_double(stmt, 4);
-			pos++;
-			break;
-		default:
-			pr_err(owl, "sqlite3_step(read) [%d]: %s\n", r, sqlite3_errstr(r));
-			r = -EBADF;
-			goto exit;
-		}
-	} while (r != SQLITE_DONE);
-
-	r = pos;
-
+	r = 0;
 exit:
 	if (parts != NULL) {
 		for (size_t i = 0; i < part_size; ++i) {
@@ -1424,8 +1413,65 @@ exit:
 		free(bind);
 	if (sql != NULL)
 		free(sql);
-	if (stmt != NULL)
-		sqlite3_finalize(stmt);
+	if (r != 0)
+		libowl_query_free(query);
+	return r;
+}
+
+/* Returns 0 for OK and more available, 1 if DONE or negative errno for error */
+static int libowl_query_next(struct libowl* owl, struct libowl_query* query, struct libowl_sensor_data* data)
+{
+	const int r = sqlite3_step(query->stmt);
+	switch (r) {
+	case SQLITE_DONE:
+		return 1;
+	case SQLITE_ROW:
+		data->index = sqlite3_column_int64(query->stmt, 0);
+		data->type = sqlite3_column_int(query->stmt, 1);
+		data->name = (const char*) sqlite3_column_text(query->stmt, 2);
+		data->value = sqlite3_column_int64(query->stmt, 3);
+		data->epoch = sqlite3_column_double(query->stmt, 4);
+		return 0;
+	default:
+		pr_err(owl, "sqlite3_step(read) [%d]: %s\n", r, sqlite3_errstr(r));
+		return -EBADF;
+	}
+}
+
+int libowl_read(struct libowl* owl, const struct libowl_option* options, size_t option_size,
+									const struct libowl_filter* filters, size_t filter_size,
+									struct libowl_sensor_data* data, size_t size)
+{
+	if (owl == NULL || data == NULL || size == 0 || size > INT_MAX)
+		return -EINVAL;
+
+	struct libowl_query query;
+	memset(&query, 0, sizeof(query));
+	int r = libowl_query_create(owl, &query, (int) size, options, option_size, filters, filter_size);
+	if (r != 0)
+		return r;
+
+	/* retrieve data */
+	size_t pos = 0;
+	do {
+		r = libowl_query_next(owl, &query, &data[pos]);
+		switch (r) {
+		case 0:
+			data[pos].name = strdup(data[pos].name);
+			pos++;
+			break;
+		case 1:
+			break;
+		default:
+			goto exit;
+		}
+	}
+	while (r != 1);
+
+	r = pos;
+
+exit:
+	libowl_query_free(&query);
 	if (r < 0) {
 		for (size_t i = 0; i < pos; ++i)
 			libowl_sensor_data_free(&data[i]);
