@@ -1465,8 +1465,7 @@ int libowl_read(struct libowl* owl, const struct libowl_option* options, size_t 
 		default:
 			goto exit;
 		}
-	}
-	while (r != 1);
+	} while (r != 1);
 
 	r = pos;
 
@@ -1476,5 +1475,391 @@ exit:
 		for (size_t i = 0; i < pos; ++i)
 			libowl_sensor_data_free(&data[i]);
 	}
+	return r;
+}
+
+int libowl_impl_dp_push(struct libowl_impl_dp* idp, const char* name, int type, double epoch, int value)
+{
+	struct libowl_impl_dp_sensor *sptr = NULL;
+
+	/* Check if sensor already allocated */
+	for (int i = 0; i < idp->sensors_pos; ++i) {
+		if (strcmp(idp->sensors[i].name, name) == 0) {
+			sptr = &idp->sensors[i];
+			break;
+		}
+	}
+
+	/* Add sensor to array */
+	if (sptr == NULL) {
+		/* allocate if not enough space, allocate 10 sensors */
+		if (idp->sensors_pos >= idp->sensors_size) {
+			if ((INT_MAX - idp->sensors_pos) < 10)
+				return -E2BIG;
+			struct libowl_impl_dp_sensor *tmp = realloc(idp->sensors,
+					sizeof(struct libowl_impl_dp_sensor) * (idp->sensors_size + 10));
+			if (tmp == NULL)
+				return -ENOMEM;
+			idp->sensors = tmp;
+			idp->sensors_size += 10;
+		}
+		sptr = &idp->sensors[idp->sensors_pos];
+		memset(sptr, 0, sizeof(*sptr));
+		sptr->name = strdup(name);
+		if (sptr->name == NULL)
+			return -ENOMEM;
+		sptr->type = type;
+		idp->sensors_pos++;
+	}
+
+	/* Allocate space for value if needed, allocate 10 values */
+	if (sptr->values_pos >= sptr->values_size) {
+		if ((INT_MAX - sptr->values_size) < 10)
+			return -E2BIG;
+		struct libowl_impl_dp_value *tmp = realloc(sptr->values,
+				sizeof(struct libowl_impl_dp_value) * (sptr->values_size + 10));
+		if (tmp == NULL)
+			return -ENOMEM;
+		sptr->values = tmp;
+		sptr->values_size += 10;
+	}
+
+	/* Add value */
+	sptr->values[sptr->values_pos].epoch = epoch;
+	sptr->values[sptr->values_pos].value = value;
+	sptr->values_pos++;
+	return 0;
+}
+
+int libowl_impl_dp_sensors_size(const struct libowl_impl_dp* idp)
+{
+	return idp->sensors_pos;
+}
+
+int libowl_impl_dp_values_size(const struct libowl_impl_dp* idp, int sensor)
+{
+	if (sensor < 0)
+		return -EINVAL;
+	if (sensor >= idp->sensors_pos)
+		return -ENOENT;
+	return idp->sensors[sensor].values_pos;
+}
+
+const struct libowl_impl_dp_sensor* libowl_impl_dp_sensor(const struct libowl_impl_dp* idp, int sensor)
+{
+	if (sensor < 0 || sensor >= idp->sensors_pos)
+		return NULL;
+	return &idp->sensors[sensor];
+}
+
+const struct libowl_impl_dp_value* libowl_impl_dp_value(const struct libowl_impl_dp* idp, int sensor, int value)
+{
+	const struct libowl_impl_dp_sensor *sptr = libowl_impl_dp_sensor(idp, sensor);
+	if (sptr == NULL || value >= sptr->values_pos)
+		return NULL;
+	return &sptr->values[value];
+}
+
+void libowl_impl_dp_trim(struct libowl_impl_dp* idp, double min, int points)
+{
+	/* for all sensors, iterate in reverse order to allow removing during iterator */
+	for (int i = idp->sensors_pos - 1; i >= 0; --i) {
+		/* first limit by number of datapoints */
+		int j = 0;
+		if (idp->sensors[i].values_pos > points)
+			j = idp->sensors[i].values_pos - points;
+		/* then remove until epoch threshold is met */
+		for (; j < idp->sensors[i].values_pos; ++j) {
+			if (idp->sensors[i].values[j].epoch >= min)
+				break;
+		}
+
+		/* move remaining values to start of array */
+		if (j > 0) {
+			memmove(&idp->sensors[i].values[0], &idp->sensors[i].values[j],
+					(idp->sensors[i].values_pos - j) * sizeof(idp->sensors[i].values[0]));
+			idp->sensors[i].values_pos -= j;
+		}
+
+		/* remove sensor if empty */
+		if (idp->sensors[i].values_pos < 1) {
+			/* free allocated data */
+			if (idp->sensors[i].values != NULL) {
+				free(idp->sensors[i].values);
+				idp->sensors[i].values = NULL;
+			}
+			if (idp->sensors[i].name != NULL) {
+				free(idp->sensors[i].name);
+				idp->sensors[i].name = NULL;
+			}
+			/* swap with last entry, unless we're already last */
+			if (i < idp->sensors_pos - 1)
+				memcpy(&idp->sensors[i], &idp->sensors[idp->sensors_pos - 1], sizeof(idp->sensors[0]));
+			idp->sensors_pos--;
+		}
+	}
+}
+
+void libowl_impl_dp_free(struct libowl_impl_dp* idp)
+{
+	if (idp == NULL)
+		return;
+	if (idp->sensors != NULL) {
+		for (int i = 0; i < idp->sensors_pos; ++i) {
+			if (idp->sensors[i].values != NULL) {
+				free(idp->sensors[i].values);
+				idp->sensors[i].values = NULL;
+			}
+			if (idp->sensors[i].name != NULL) {
+				free(idp->sensors[i].name);
+				idp->sensors[i].name = NULL;
+			}
+		}
+		free(idp->sensors);
+		idp->sensors = NULL;
+	}
+}
+
+enum datapoints_filter_index {
+	DATAPOINTS_FILTER_EPOCH_FROM,
+	DATAPOINTS_FILTER_EPOCH_TO,
+	DATAPOINTS_FILTER_INDEX_FROM,
+	DATAPOINTS_FILTER_MIN_SIZE,
+};
+
+enum datapoints_option_index {
+	DATAPOINTS_OPTION_AGGREGATE, /* avg, min, max */
+	DATAPOINTS_OPTION_INTERVAL,
+	DATAPOINTS_OPTION_MIN_SIZE,
+};
+
+struct dp {
+	double epoch;
+	int value;
+};
+
+struct sensor_datapoints {
+	char *name;
+	struct dp *values;
+	int values_size;
+	int values_pos;
+	int type;
+};
+
+struct libowl_datapoints {
+	struct libowl *owl;
+	struct libowl_filter *filters;
+	size_t filters_size;
+	struct libowl_impl_dp idp;
+	struct libowl_option options[DATAPOINTS_OPTION_MIN_SIZE];
+	int points;
+	double interval;
+	double epoch_last;
+	int64_t index_last;
+};
+
+int libowl_datapoints_create(struct libowl* owl, struct libowl_datapoints** dp, int points, double interval,
+									const struct libowl_filter* filters, size_t filter_size, int options)
+{
+	if (owl == NULL || dp == NULL || *dp != NULL || points < 1 || options == 0)
+		return -EINVAL;
+
+	/* only name and type filters are allowed */
+	for (size_t i = 0; i < filter_size; ++i) {
+		if (filters[i].type != LIBOWL_FILTER_NAME
+				&& filters[i].type != LIBOWL_FILTER_TYPE)
+			return -EINVAL;
+	}
+
+	struct libowl_datapoints *tmp = calloc(1, sizeof(struct libowl_datapoints));
+	if (tmp == NULL)
+		return -ENOMEM;
+
+	int r = 0;
+
+	tmp->owl = owl;
+	tmp->filters_size = DATAPOINTS_FILTER_MIN_SIZE + filter_size;
+	tmp->filters = calloc(tmp->filters_size, sizeof(struct libowl_filter));
+	if (tmp->filters == NULL) {
+		r = -ENOMEM;
+		goto exit;
+	}
+
+	/* add all name/type filters */
+	for (size_t i = 0; i < filter_size; ++i)
+		memcpy(&tmp->filters[DATAPOINTS_FILTER_MIN_SIZE + i], &filters[i], sizeof(struct libowl_filter));
+
+	/* add aggregate option */
+	const int mask = LIBOWL_DATAPOINTS_AVG | LIBOWL_DATAPOINTS_MIN | LIBOWL_DATAPOINTS_MAX;
+	switch (options & mask) {
+	case LIBOWL_DATAPOINTS_AVG:
+		r = libowl_option_avg(&tmp->options[DATAPOINTS_OPTION_AGGREGATE]);
+		break;
+	case LIBOWL_DATAPOINTS_MIN:
+		r = libowl_option_min(&tmp->options[DATAPOINTS_OPTION_AGGREGATE]);
+		break;
+	case LIBOWL_DATAPOINTS_MAX:
+		r = libowl_option_max(&tmp->options[DATAPOINTS_OPTION_AGGREGATE]);
+		break;
+	default:
+		r = -EINVAL;
+		break;
+	}
+	if (r != 0)
+		goto exit;
+
+	/* set interval */
+	r = libowl_option_interval(&tmp->options[DATAPOINTS_OPTION_INTERVAL], interval);
+	if (r != 0)
+		goto exit;
+	tmp->interval = interval;
+	tmp->points = points;
+
+	*dp = tmp;
+	tmp = NULL;
+	r = 0;
+exit:
+	if (tmp != NULL)
+		libowl_datapoints_free(tmp);
+	return r;
+}
+
+int libowl_datapoints_free(struct libowl_datapoints* dp)
+{
+	if (dp != NULL) {
+		if (dp->filters != NULL) {
+			free(dp->filters);
+			dp->filters = NULL;
+		}
+		libowl_impl_dp_free(&dp->idp);
+		free(dp);
+	}
+	return 0;
+}
+
+int libowl_datapoints_sensor(const struct libowl_datapoints* dp, int sensor, char** name, int* type)
+{
+	if (dp == NULL)
+		return -EINVAL;
+	if (sensor < 0)
+		return libowl_impl_dp_sensors_size(&dp->idp);
+	if (name == NULL || type == NULL)
+		return -EINVAL;
+	const struct libowl_impl_dp_sensor *dps = libowl_impl_dp_sensor(&dp->idp, sensor);
+	if (dps == NULL)
+		return -ENOENT;
+	*name = dps->name;
+	*type = dps->type;
+	return 0;
+}
+
+int libowl_datapoints_sensor_data(const struct libowl_datapoints* dp, int sensor, int point, int* value, double* epoch)
+{
+	if (dp == NULL || sensor < 0)
+		return -EINVAL;
+	if (point < 0)
+		return libowl_impl_dp_values_size(&dp->idp, sensor);
+	if (value == NULL || epoch == NULL)
+		return -EINVAL;
+	const struct libowl_impl_dp_value *dpv = libowl_impl_dp_value(&dp->idp, sensor, point);
+	if (dpv == NULL)
+		return -ENOENT;
+	*value = dpv->value;
+	*epoch = dpv->epoch;
+	return 0;
+}
+
+int libowl_datapoints_range(const struct libowl_datapoints* dp, int sensor, double* start, double* end)
+{
+	if (dp == NULL || start == NULL || end == NULL)
+		return -EINVAL;
+
+	double lowest = dp->epoch_last;
+	double highest = 0.0;
+	for (int i = sensor < 0 ? 0 : sensor; i < (sensor < 0 ? dp->idp.sensors_pos : sensor + 1); ++i) {
+		for (int j = 0; j < dp->idp.sensors[i].values_pos; ++j) {
+			if (dp->idp.sensors[i].values[j].epoch < lowest)
+				lowest = dp->idp.sensors[i].values[j].epoch;
+			if (dp->idp.sensors[i].values[j].epoch > highest)
+				highest = dp->idp.sensors[i].values[j].epoch;
+		}
+	}
+	*start = lowest;
+	*end = highest;
+	return 0;
+}
+
+static double min_dbl(double a, double b)
+{
+	return a < b ? a : b;
+}
+
+static int64_t max_int64(int64_t a, int64_t b)
+{
+	return a > b ? a : b;
+}
+
+int libowl_datapoints_update(struct libowl_datapoints* dp)
+{
+	if (dp == NULL)
+		return -EINVAL;
+
+	double epoch_now = 0.0;
+	int r = libowl_get_epoch(dp->owl, &epoch_now);
+	if (r != 0)
+		return r;
+
+	/* check if dp->interval time has passed since last reading */
+	if ((epoch_now - dp->epoch_last) < dp->interval)
+		return 0;
+
+	/* calculate time range for query */
+	const double epoch_from = min_dbl(epoch_now - (dp->interval * (double) dp->points), 0.0);
+	r = libowl_filter_epoch(&dp->filters[DATAPOINTS_FILTER_EPOCH_FROM], LIBOWL_OP_GREATER_THAN, epoch_from);
+	if (r != 0)
+		return r;
+
+	r = libowl_filter_epoch(&dp->filters[DATAPOINTS_FILTER_EPOCH_TO], LIBOWL_OP_LESS_EQUAL, epoch_now);
+	if (r != 0)
+		return r;
+
+	/* Set index filter */
+	r = libowl_filter_index(&dp->filters[DATAPOINTS_FILTER_INDEX_FROM], LIBOWL_OP_GREATER_THAN, dp->index_last);
+	if (r != 0)
+		return r;
+
+	/* prepare query */
+	struct libowl_query query;
+	memset(&query, 0, sizeof(query));
+	r = libowl_query_create(dp->owl, &query, INT_MAX, dp->options, DATAPOINTS_OPTION_MIN_SIZE,
+				dp->filters, dp->filters_size);
+	if (r != 0)
+		return r;
+
+	/* retrieve data */
+	int update_count = 0;
+	while (1) {
+		struct libowl_sensor_data data;
+		r = libowl_query_next(dp->owl, &query, &data);
+		if (r == 1) /* done */
+			break;
+		if (r < 0)
+			goto exit;
+
+		r = libowl_impl_dp_push(&dp->idp, data.name, data.type, data.epoch, data.value);
+		if (r != 0)
+			goto exit;
+
+		update_count++;
+		dp->index_last = max_int64(dp->index_last, data.index);
+	}
+
+	/* trim available datapoints to current time range and maximum points */
+	libowl_impl_dp_trim(&dp->idp, epoch_from, dp->points);
+
+	dp->epoch_last = epoch_now;
+	r = update_count > 0 ? 1 : 0;
+exit:
+	libowl_query_free(&query);
 	return r;
 }

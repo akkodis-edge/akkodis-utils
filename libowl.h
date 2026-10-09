@@ -161,6 +161,76 @@ int libowl_read(struct libowl* owl, const struct libowl_option* options, size_t 
 									struct libowl_sensor_data* data, size_t size);
 int libowl_sensor_data_free(struct libowl_sensor_data* data);
 
+struct libowl_datapoints;
+
+enum libowl_datapoints_option {
+	/* __ONE OF__ AVG, MIN or MAX must be selected. */
+	LIBOWL_DATAPOINTS_AVG = 1 << 0, /* return average value at interval */
+	LIBOWL_DATAPOINTS_MIN = 1 << 1, /* return minimum value at interval */
+	LIBOWL_DATAPOINTS_MAX = 1 << 2,  /* return maximum value at interval */
+};
+/* Create a managed datapoints buffer of maximum "points" at intervals "interval"
+ * filtered by "filters". Allowed filters include name and type. Filter is NOT mandatory.
+ * Any other filter will return -EINVAL.
+ *
+ * See libowl_option_interval() for limitations on "interval".
+ * Time range included in buffer will be from "time_now - (interval * points)" to "time_now".
+ * Multiple sensors may be included.
+ *
+ * Caller is responsible of freeing "datapoints", see "libowl_datapoints_free()".
+ *
+ * Returns 0 for success or negative errno for error. */
+int libowl_datapoints_create(struct libowl* owl, struct libowl_datapoints** dp, int points, double interval,
+									const struct libowl_filter* filters, size_t filter_size, int options);
+int libowl_datapoints_free(struct libowl_datapoints* datapoints);
+
+/* Update datapoints buffer. Returns 1 if updated, 0 if not or negative errno for error */
+int libowl_datapoints_update(struct libowl_datapoints* dp);
+
+/* Return details of "sensor" index.
+ *
+ * "name" points to internal libowl_datapoints data and shall not be free'd.
+ *
+ * Return 0 for success or negative errno on error. If "sensor" < 0 return total number of sensors. */
+int libowl_datapoints_sensor(const struct libowl_datapoints* dp, int sensor, char** name, int* type);
+
+/* Return "value" for "point" index of "sensor" index.
+ *
+ * Returns 0 for success or negative errno for error.
+ * If "sensor" >= 0 and "point" < 0 return total number of points for "sensor". */
+int libowl_datapoints_sensor_data(const struct libowl_datapoints* dp, int sensor, int point, int* value, double* epoch);
+
+/* Return time range of either all sensors if "sensor" < 0 or
+ * specific sensor if "sensor" >= 0.
+ *
+ * Returns 0 for success or negative errno for error. */
+int libowl_datapoints_range(const struct libowl_datapoints* dp, int sensor, double* start, double* end);
+
+/* libowl internal -- exposed for testing -- do not use */
+struct libowl_impl_dp_value {
+	double epoch;
+	int value;
+};
+struct libowl_impl_dp_sensor {
+	char *name;
+	struct libowl_impl_dp_value *values;
+	int values_size;
+	int values_pos;
+	int type;
+};
+struct libowl_impl_dp {
+	struct libowl_impl_dp_sensor *sensors;
+	int sensors_size;
+	int sensors_pos;
+};
+int libowl_impl_dp_push(struct libowl_impl_dp* idp, const char* name, int type, double epoch, int value);
+int libowl_impl_dp_sensors_size(const struct libowl_impl_dp* idp);
+int libowl_impl_dp_values_size(const struct libowl_impl_dp* idp, int sensor);
+const struct libowl_impl_dp_sensor* libowl_impl_dp_sensor(const struct libowl_impl_dp* idp, int sensor);
+const struct libowl_impl_dp_value* libowl_impl_dp_value(const struct libowl_impl_dp* idp, int sensor, int value);
+void libowl_impl_dp_trim(struct libowl_impl_dp* idp, double min, int points);
+void libowl_impl_dp_free(struct libowl_impl_dp* idp);
+
 #ifdef __cplusplus
 }
 #endif
