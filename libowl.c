@@ -640,10 +640,10 @@ static char* join_statement(const struct libowl_statement_part* parts, size_t si
 	return sql;
 }
 
-static int libowl_sensor_delete(struct libowl* owl, int64_t size)
+static int libowl_sensor_delete(struct libowl* owl, int size)
 {
 	const struct libowl_bind bind_delete = {
-		.col = 1, .type = BIND_INT64, .data.i64 = size
+		.col = 1, .type = BIND_INT, .data.integer = size
 	};
 	sqlite3_stmt *stmt = libowl_single(owl,
 			"DELETE FROM data WHERE id IN (SELECT id FROM data LIMIT (?))",
@@ -655,7 +655,7 @@ static int libowl_sensor_delete(struct libowl* owl, int64_t size)
 
 static int libowl_sensor_push(struct libowl* owl, const struct libowl_sensor_data* data, size_t size, size_t* written, int delete_before_insert)
 {
-	if (size > INT64_MAX)
+	if (size > INT_MAX)
 		return -EINVAL;
 
 	sqlite3_stmt *stmt = NULL;
@@ -665,7 +665,7 @@ static int libowl_sensor_push(struct libowl* owl, const struct libowl_sensor_dat
 		goto exit;
 
 	if (delete_before_insert) {
-		r = libowl_sensor_delete(owl, (int64_t) size);
+		r = libowl_sensor_delete(owl, (int) size);
 		if (r != 0)
 			goto exit;
 	}
