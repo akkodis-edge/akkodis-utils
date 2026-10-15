@@ -25,6 +25,14 @@ struct Deleter {
 			libowl_sensor_data_free(&test->data[i]);
 		free(test->data);
 	}
+	void operator()(struct libowl_datapoints* dp)
+	{
+		libowl_datapoints_free(dp);
+	}
+	void operator()(struct libowl_impl_dp* idp)
+	{
+		libowl_impl_dp_free(idp);
+	}
 };
 
 static int dummy_sensor_read(int* value, void* priv)
@@ -675,5 +683,172 @@ TEST_CASE("read aggregate") {
 			for (int i = 0; i < r; ++i)
 				sensor_data_equal(&test.data[i], &min_expected[i]);
 		}
+	}
+}
+
+TEST_CASE("impl-datapoints") {
+	struct libowl_impl_dp idp;
+	memset(&idp, 0, sizeof(idp));
+	auto at_exit = std::unique_ptr<struct libowl_impl_dp, Deleter>(&idp);
+
+	SECTION("Empty") {
+		REQUIRE(libowl_impl_dp_sensors_size(&idp) == 0);
+	}
+	SECTION("Single sensor single value") {
+		REQUIRE(libowl_impl_dp_push(&idp, "test1", LIBOWL_SENSOR_TEMP, 1.0, 100) == 0);
+
+		/* confirm value */
+		REQUIRE(libowl_impl_dp_sensors_size(&idp) == 1);
+		REQUIRE(libowl_impl_dp_values_size(&idp, 0) == 1);
+		const struct libowl_impl_dp_value *dpv = nullptr;
+		dpv = libowl_impl_dp_value(&idp, 0, 0);
+		REQUIRE(dpv->value == 100);
+
+		/* trim -- within range -- no change */
+		libowl_impl_dp_trim(&idp, 0.0, 1);
+
+		/* confirm value */
+		REQUIRE(libowl_impl_dp_sensors_size(&idp) == 1);
+		REQUIRE(libowl_impl_dp_values_size(&idp, 0) == 1);
+		dpv = libowl_impl_dp_value(&idp, 0, 0);
+		REQUIRE(dpv->value == 100);
+
+		/* trim -- out of range -- no values */
+		libowl_impl_dp_trim(&idp, 2.0, 1);
+		REQUIRE(libowl_impl_dp_sensors_size(&idp) == 0);
+	}
+
+	SECTION("Two sensors single value") {
+		REQUIRE(libowl_impl_dp_push(&idp, "test1", LIBOWL_SENSOR_TEMP, 1.0, 100) == 0);
+		REQUIRE(libowl_impl_dp_push(&idp, "test2", LIBOWL_SENSOR_TEMP, 2.0, 200) == 0);
+
+		/* confirm value */
+		REQUIRE(libowl_impl_dp_sensors_size(&idp) == 2);
+		REQUIRE(libowl_impl_dp_values_size(&idp, 0) == 1);
+		REQUIRE(libowl_impl_dp_values_size(&idp, 1) == 1);
+		const struct libowl_impl_dp_value *dpv = nullptr;
+		dpv = libowl_impl_dp_value(&idp, 0, 0);
+		REQUIRE(dpv->value == 100);
+		dpv = libowl_impl_dp_value(&idp, 1, 0);
+		REQUIRE(dpv->value == 200);
+
+		/* trim -- within range -- no change */
+		libowl_impl_dp_trim(&idp, 0.0, 1);
+
+		/* confirm value */
+		REQUIRE(libowl_impl_dp_sensors_size(&idp) == 2);
+		REQUIRE(libowl_impl_dp_values_size(&idp, 0) == 1);
+		REQUIRE(libowl_impl_dp_values_size(&idp, 1) == 1);
+		dpv = libowl_impl_dp_value(&idp, 0, 0);
+		REQUIRE(dpv->value == 100);
+		dpv = libowl_impl_dp_value(&idp, 1, 0);
+		REQUIRE(dpv->value == 200);
+
+		SECTION("trim both") {
+			/* trim -- out of range -- no values */
+			libowl_impl_dp_trim(&idp, 3.0, 1);
+			REQUIRE(libowl_impl_dp_sensors_size(&idp) == 0);
+		}
+
+		SECTION("trim last") {
+			/* trim -- remove first -- no values */
+			libowl_impl_dp_trim(&idp, 2.0, 1);
+			REQUIRE(libowl_impl_dp_sensors_size(&idp) == 1);
+
+			/* confirm value */
+			REQUIRE(libowl_impl_dp_sensors_size(&idp) == 1);
+			REQUIRE(libowl_impl_dp_values_size(&idp, 0) == 1);
+			dpv = libowl_impl_dp_value(&idp, 0, 0);
+			REQUIRE(dpv->value == 200);
+		}
+	}
+}
+
+void dump_sensors(const struct libowl_datapoints* dp)
+{
+	for (int i = 0; i < libowl_datapoints_sensor(dp, -1, nullptr, nullptr); ++i) {
+		char *name = nullptr;
+		int type = 0;
+		libowl_datapoints_sensor(dp, i, &name, &type);
+		for (int j = 0; j < libowl_datapoints_sensor_data(dp, i, -1, nullptr, nullptr); ++j) {
+			int value = 0;
+			double epoch = 0.0;
+			libowl_datapoints_sensor_data(dp, i, j, &value, &epoch);
+			printf("%s [%d]: %f - %d\n", name, type, epoch, value);
+		}
+	}
+}
+
+TEST_CASE("datapoints") {
+	/* Prepare database with separate entries, use our monotonic with second resolution to avoid issues with epoch double precision */
+	struct libowl *owl = nullptr;
+	REQUIRE(libowl_open(&owl, "file::memory:?cache=shared", LIBOWL_OPEN_WRITE | LIBOWL_TIMESTAMP_MONOTONIC) == 0);
+	auto at_exit = std::unique_ptr<struct libowl, Deleter>(owl);
+	libowl_set_loglevel(owl, LIBOWL_LOGLEVEL_ERROR);
+	int seconds = 0;
+	REQUIRE(libowl_set_monotonic(owl, monotonic_s, &seconds) == 0);
+
+	const int sensor_1_multiple = 10;
+	const int sensor_2_multiple = 100;
+	const int sensor_3_multiple = 1000;
+
+	int sensor1_value = 0;
+	int sensor2_value = 0;
+	int sensor3_value = 0;
+	REQUIRE(libowl_add_sensor(owl, LIBOWL_SENSOR_TEMP, "sensor1", 0, &dummy_ops, 0, &sensor1_value) == 0);
+	REQUIRE(libowl_add_sensor(owl, LIBOWL_SENSOR_TEMP, "sensor2", 0, &dummy_ops, 0, &sensor2_value) == 0);
+	REQUIRE(libowl_add_sensor(owl, LIBOWL_SENSOR_TEMP, "sensor3", 0, &dummy_ops, 0, &sensor3_value) == 0);
+
+	/* Add 30 readings for each sensor at 10 second intervals */
+	for (int i = 0; i < 30; ++i) {
+		REQUIRE(libowl_update(owl) == 3);
+		seconds += 10;
+		sensor1_value += sensor_1_multiple;
+		sensor2_value += sensor_2_multiple;
+		sensor3_value += sensor_3_multiple;
+	}
+
+	SECTION("Single sensor1") {
+		/* Read 2 points at 30 second intervals */
+		struct libowl_filter filters[1];
+		REQUIRE(libowl_filter_name(&filters[0], LIBOWL_OP_IN, "sensor1") == 0);
+		struct libowl_datapoints *dp = nullptr;
+		REQUIRE(libowl_datapoints_create(owl, &dp, 2, 30.0, filters, 1, LIBOWL_DATAPOINTS_MAX) == 0);
+		auto dp_at_exit = std::unique_ptr<struct libowl_datapoints, Deleter>(dp);
+
+		seconds = 50;
+		for (int i = 0; i < 9; ++i) {
+			REQUIRE(libowl_datapoints_update(dp) == 1);
+			seconds += 30;
+
+			/* single sensor*/
+			REQUIRE(libowl_datapoints_sensor(dp, -1, nullptr, nullptr) == 1);
+			char* name = nullptr;
+			int type = -1;
+			REQUIRE(libowl_datapoints_sensor(dp, 0, &name, &type) == 0);
+			REQUIRE(strcmp(name, "sensor1") == 0);
+			REQUIRE(type == LIBOWL_SENSOR_TEMP);
+			/* two values */
+			REQUIRE(libowl_datapoints_sensor_data(dp, 0, -1, nullptr, nullptr) == 2);
+			double epoch_first = 0.0;
+			int value_first = 0;
+			double epoch_second = 0.0;
+			int value_second = 0;
+			REQUIRE(libowl_datapoints_sensor_data(dp, 0, 0, &value_first, &epoch_first) == 0);
+			REQUIRE(libowl_datapoints_sensor_data(dp, 0, 1, &value_second, &epoch_second) == 0);
+
+			/* validate results are as expected */
+			REQUIRE(value_first == (i * 3 * sensor_1_multiple) + (2 * sensor_1_multiple));
+			//REQUIRE(epoch_first == )
+			REQUIRE(value_second == ((i + 1) * 3 * sensor_1_multiple) + (2 * sensor_1_multiple));
+
+			/* get range */
+			double start = 0.0;
+			double end = 0.0;
+			REQUIRE(libowl_datapoints_range(dp, 0, &start, &end) == 0);
+			REQUIRE((long) start == (i * 3 * sensor_1_multiple) + (2 * sensor_1_multiple));
+			REQUIRE((long) end == ((i + 1) * 3 * sensor_1_multiple) + (2 * sensor_1_multiple));
+		}
+
 	}
 }
