@@ -163,6 +163,69 @@ class Options():
             c_index += 1
         return c_option_array
 
+class Datapoints:
+    def __init__(self, owl, lib, points, interval, filters, aggregate):
+        self.lib = lib
+        self.dp = c_void_p()
+        c_filters_array = filters.build(self.lib)
+        c_filters_size = c_size_t(len(c_filters_array))
+        if aggregate == 'avg':
+            option = c_int(1)
+        elif aggregate == 'min':
+            option = c_int(2)
+        elif aggregate == 'max':
+            option = c_int(4)
+        else:
+            raise ValueError('Invalid aggregate value')
+        ret = self.lib.libowl_datapoints_create(owl, byref(self.dp), c_int(points), c_double(interval),
+                                                c_filters_array, c_filters_size, option)
+        if ret != 0:
+            raise OSError(ret, os.strerror(ret), 'Failed opening datapoints')
+    def __del__(self):
+        if (self.dp):
+            self.lib.libowl_datapoints_free(self.dp)
+    def update(self):
+        ret = self.lib.libowl_datapoints_update(self.dp)
+        if ret < 0:
+            raise OSError(ret, os.strerror(ret), 'Failed reading datapoints')
+        if ret == 0:
+            return False
+        return True
+    def get(self):
+        ret = self.lib.libowl_datapoints_sensor(self.dp, c_int(-1), None, None)
+        if (ret < 0):
+            raise OSError(ret, os.strerror(ret), 'Failed reading datapoints sensor count')
+        sensors = ret
+        data = {}
+        for i in range(0, sensors):
+            name = c_char_p()
+            type = c_int(0)
+            ret = self.lib.libowl_datapoints_sensor(self.dp, c_int(i), byref(name), byref(type))
+            if (ret != 0):
+                raise OSError(ret, os.strerror(ret), 'Failed reading datapoints sensor')
+            name = name.value.decode('utf-8')
+            type = type.value
+            data[name] = []
+            ret = self.lib.libowl_datapoints_sensor_data(self.dp, c_int(i), c_int(-1), None, None)
+            if (ret < 0):
+                raise OSError(ret, os.strerror(ret), 'Failed reading datapoints sensor data count')
+            values = ret
+            for j in range(0, values):
+                value = c_int(0)
+                epoch = c_double(0.0)
+                ret = self.lib.libowl_datapoints_sensor_data(self.dp, c_int(i), c_int(j), byref(value), byref(epoch))
+                if (ret != 0):
+                    raise OSError(ret, os.strerror(ret), 'Failed reading datapoints sensor data')
+                data[name].append((epoch.value, type, value.value))
+        return data
+    def range(self):
+        start = c_double()
+        end = c_double()
+        ret = self.lib.libowl_datapoints_range(self.dp, c_int(-1), byref(start), byref(end))
+        if (ret != 0):
+            raise OSError(ret, os.strerror(ret), 'Failed reading datapoints range')
+        return (start.value, end.value)
+
 class LibOwl:
     def __init__(self, path):
         self.owl = None
@@ -199,3 +262,5 @@ class LibOwl:
                 out.append((data.name.decode('utf-8'), data.index, data.epoch, data.type, data.value))
                 self.lib.libowl_sensor_data_free(byref(data))
         return out
+    def datapoints(self, points, interval, filters, aggregate):
+        return Datapoints(self.owl, self.lib, points, interval, filters, aggregate)
