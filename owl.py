@@ -78,60 +78,6 @@ class Gnuplot:
         self.prev_height = options.max_height
         return self.prev_plot
 
-def read_datapoints(db, datapoints, points, types, time_from, time_to):
-    '''
-    Return True if data updated or false if not
-    '''
-    last_index = 0
-    # Calculate interval per datapoint
-    interval = (time_to - time_from) / points
-    # Minimum supported interval is 1 ms
-    if interval < 0.001:
-        interval = 0.001
-    options = Options()
-    options.interval(interval)
-    options.avg()
-    updated = 0
-    while True:
-        filters = Filters()
-        filters.index(LIBOWL_OP_GREATER_THAN, last_index)
-        for type in types:
-            filters.type(LIBOWL_OP_IN, type)
-        filters.epoch(LIBOWL_OP_GREATER_THAN, time_from)
-        filters.epoch(LIBOWL_OP_LESS_EQUAL, time_to)
-        data = db.read(filters, options, 1000)
-        updated += len(data)
-        # no new data available
-        if updated == 0 and len(data) == 0:
-            return False
-        # Add sensor values to datapoints
-        for name, index, epoch, type, value in data:
-            if name not in datapoints:
-                datapoints[name] = []
-            datapoints[name].append((epoch, type, value))
-            if index > last_index:
-                last_index = index
-        # No more data to read
-        if len(data) < 1000:
-            break
-    # Trim readings outside our scope
-    to_delete = []
-    for name in datapoints:
-        # delete if empty
-        if not datapoints[name]:
-            to_delete(name)
-            continue
-        # limit to points number of values and sort by epoch
-        datapoints[name] = sorted(datapoints[name][-points:], key=lambda tup: tup[0])
-        # Remove if epoch of last reading is less than time_from
-        if datapoints[name][-1][0] < time_from:
-            to_delete(name)
-            continue
-
-    for name in to_delete:
-        del datapoints[name]
-    return True
-
 def update_plot(root, datapoints, time_from, time_to, yformat):
     root['plot'].update(Gnuplot(datapoints, yformat))
     info_text = Table.grid(expand=True)
@@ -200,11 +146,40 @@ POS_MINUTE = 5
 POS_MAX = 5
 
 class Control:
-    def __init__(self):
+    def __init__(self, owl):
+        self.owl = owl
         self.input = Input()
         self.cursor_pos = POS_HOUR
         self.cursor_sel = POS_HOUR
+        self.dp_temperature = self.__create_datapoints([SENSOR_TEMPERATURE])
+        self.dp_ratio = self.__create_datapoints([SENSOR_RATIO])
+        self.footer = self.__generate_footer()
+    def __create_datapoints(self, types):
+        (points, interval) = self.__calc_points_and_interval()
+        filters = Filters()
+        for type in types:
+            filters.type(LIBOWL_OP_IN, type)
+        return self.owl.datapoints(points, interval, filters, aggregate='avg')
+    def __calc_points_and_interval(self):
+        points = 100
+        if self.cursor_sel == POS_YEAR:
+            interval = 60.0*60.0*24.0*365.0/points
+        elif self.cursor_sel == POS_MONTH:
+            interval = 60.0*60.0*24.0*30.0/points
+        elif self.cursor_sel == POS_WEEK:
+            interval = 60.0*60.0*24.0*7.0/points
+        elif self.cursor_sel == POS_DAY:
+            interval = 60.0*60.0*24.0/points
+        elif self.cursor_sel == POS_HOUR:
+            interval = 60.0*60.0/points
+        elif self.cursor_sel == POS_MINUTE:
+            interval = 60.0/points
+        else:
+            raise RuntimeError('Invalid plotting range')
+        return (points, interval)
     def process_input(self):
+        selected_before = self.cursor_sel
+        cursor_before = self.cursor_pos
         while True:
             char = self.input.getch()
             if char == None:
@@ -221,6 +196,14 @@ class Control:
                 pass
             elif char == b' ': # SPACE
                 self.cursor_sel = self.cursor_pos
+        # update datapoints if new range selected
+        if selected_before != self.cursor_sel:
+            self.dp_temperature = self.__create_datapoints([SENSOR_TEMPERATURE])
+            self.dp_ratio = self.__create_datapoints([SENSOR_RATIO])
+        # Generate new footer if any update
+        if selected_before != self.cursor_sel or \
+            cursor_before != self.cursor_pos:
+            self.footer = self.__generate_footer()
     def __generate_button(self, pos):
         if pos == POS_YEAR:
             name = ' YEAR '
@@ -245,7 +228,7 @@ class Control:
         else:
             color = 'blue'
         return (name, color)
-    def footer(self):
+    def __generate_footer(self):
         grid = Table.grid(expand=True)
         grid.add_column(justify='left')
         grid.add_column(justify='center')
@@ -267,22 +250,6 @@ class Control:
         ))
         grid.add_row('Akkodis Edge')
         return grid
-    def plot_time_range(self):
-        time_now = time.time()
-        if self.cursor_sel == POS_YEAR:
-            return (time_now - (60*60*24*365), time_now)
-        elif self.cursor_sel == POS_MONTH:
-            return (time_now - (60*60*24*30), time_now)
-        elif self.cursor_sel == POS_WEEK:
-            return (time_now - (60*60*24*7), time_now)
-        elif self.cursor_sel == POS_DAY:
-            return (time_now - (60*60*24), time_now)
-        elif self.cursor_sel == POS_HOUR:
-            return (time_now - (60*60), time_now)
-        elif self.cursor_sel == POS_MINUTE:
-            return (time_now - (60), time_now)
-        else:
-            raise RuntimeError('Invalid plotting range')
 
 def main():
     parser = argparse.ArgumentParser(description='Logger separated in daemon writer and client reader(s)')
@@ -291,9 +258,6 @@ def main():
     args = parser.parse_args()
 
     db = LibOwl(args.db)
-
-    temp_datapoints = {}
-    ratio_datapoints = {}
 
     console = Console()
 
@@ -315,18 +279,21 @@ def main():
         Layout(name='info', size=1),
     )
 
-    control = Control()
+    control = Control(db)
 
-    with Live(layout, refresh_per_second=4) as live:
+    with Live(layout, refresh_per_second=2) as live:
         while True:
             control.process_input()
-            layout['footer'].update(control.footer())
-            (time_from, time_to) = control.plot_time_range()
-            if read_datapoints(db, temp_datapoints, 100, [SENSOR_TEMPERATURE], time_from, time_to):
-                update_plot(layout['temp'], temp_datapoints, time_from, time_to, '%.1fC')
-            if read_datapoints(db, ratio_datapoints, 100, [SENSOR_RATIO], time_from, time_to):
-                update_plot(layout['ratio'], ratio_datapoints, time_from, time_to, '%.1f%%')
-            time.sleep(1)
+            layout['footer'].update(control.footer)
+            if control.dp_temperature.update():
+                (start, end) = control.dp_temperature.range()
+                data = control.dp_temperature.get()
+                update_plot(layout['temp'], data, start, end, '%.1fC')
+            if control.dp_ratio.update():
+                (start, end) = control.dp_ratio.range()
+                data = control.dp_ratio.get()
+                update_plot(layout['ratio'], data, start, end, '%.1fC')
+            time.sleep(0.1)
 
     sys.exit(1)
 
