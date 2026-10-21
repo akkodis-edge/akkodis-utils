@@ -805,7 +805,7 @@ int libowl_update(struct libowl* owl)
 		r = owl->sensors[i].ops.read(&value, owl->sensors[i].priv);
 		memcpy(&owl->sensors[i].last_poll, &time_now, sizeof(owl->sensors[i].last_poll));
 		if (r != 0) {
-			pr_err(owl, "read sensor %s [%d]: %s\n", owl->sensors[i].name, r, strerror(r));
+			pr_err(owl, "read sensor %s [%d]: %s\n", owl->sensors[i].name, -r, strerror(-r));
 			continue;
 		}
 		/* prepare buffer space */
