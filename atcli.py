@@ -57,6 +57,7 @@ def main():
     parser.add_argument('--imei', action='store_true', help='Read modem IMEI')
     parser.add_argument('--iccid', action='store_true', help='Read SIM ICCID')
     parser.add_argument('--quectel-firmware', action='store_true', help='Read quectel firmware version')
+    parser.add_argument('--telit-temperature', help='Read telit temperature. Value of "ALL" dumps all found sensors')
     args = parser.parse_args()
 
     if not args.device:
@@ -68,7 +69,7 @@ def main():
     if not args.quectel_gps and not args.no_quectel_gps \
         and not args.quectel_nvread and not args.quectel_nvwrite \
         and not args.imsi and not args.imei and not args.iccid \
-        and not args.quectel_firmware:
+        and not args.quectel_firmware and not args.telit_temperature:
         print('invalid argument: no action provided')
         sys.exit(1)
 
@@ -120,6 +121,37 @@ def main():
             msg = get_at_result(stream, req, 1, 5)
             value = strip_command_from_msg(req, msg).decode().strip()
             print(value)
+
+        if args.telit_temperature:
+            req = b'at#tempsens=2\r'
+            msg = get_at_result(stream, req, 1, 5)
+            value = strip_command_from_msg(req, msg).decode().strip()
+            '''parse returned sensors of format:
+            #TEMPSENS: NAME,VALUE\n
+            '''
+            sensors = {}
+            for line in value.split('\n'):
+                # strip whitespace
+                line = line.strip()
+                # check if sensor entry
+                prefix = "#TEMPSENS: "
+                if not line.startswith(prefix):
+                    continue
+                line = line.removeprefix(prefix)
+                # parse NAME,VALUE
+                arr = line.split(',')
+                if len(arr) != 2:
+                    continue
+                sensors[arr[0]] = int(arr[1])
+            # dump all
+            if args.telit_temperature == 'ALL':
+                for k, v in sensors.items():
+                    print(f'{k}={v}')
+            # or dump requested
+            else:
+                if not args.telit_temperature in sensors:
+                    raise RuntimeError(f'Requested "{args.telit_temperature}" not found in msg: {msg}')
+                print(sensors[args.telit_temperature])
 
     sys.exit(0)
 
