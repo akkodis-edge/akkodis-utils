@@ -281,7 +281,7 @@ def main():
 
     control = Control(db)
 
-    with Live(layout, refresh_per_second=2) as live:
+    with Live(layout, refresh_per_second=1) as live:
         while True:
             control.process_input()
             layout['footer'].update(control.footer)
