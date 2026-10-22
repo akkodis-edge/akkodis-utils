@@ -533,25 +533,36 @@ static int create_owl_iio_device(struct iio_context* ctx, struct sensor_config* 
 		return -EINVAL;
 	}
 
-	dev->free = owl_iio_free;
-	dev->priv = calloc(1, sizeof(struct owl_iio_device));
-	if (dev->priv == NULL)
+	struct owl_iio_device *data = (struct owl_iio_device*) calloc(1, sizeof(struct owl_iio_device));
+	if (data == NULL)
 		return -ENOMEM;
-	struct owl_iio_device *data = (struct owl_iio_device*) dev->priv;
 
+	int r = 0;
 	data->dev = iio_context_find_device(ctx, scfg->device);
 	if (data->dev == NULL) {
 		fprintf(stderr, "iio device %s not found\n", scfg->device);
-		return -ENOENT;
+		r = -ENOENT;
+		goto exit;
 	}
 	data->chan = iio_device_find_channel(data->dev, scfg->channel, 0);
 	if (data->chan == NULL) {
 		fprintf(stderr, "iio device %s channel %s not found\n", scfg->device, scfg->channel);
-		return -ENOENT;
+		r = -ENOENT;
+		goto exit;
 	}
 	data->attr = (char*) scfg->attribute;
 	*ops = (struct libowl_sensor_ops*) &iio_sensor_ops;
-	return 0;
+	dev->free = owl_iio_free;
+	dev->priv = data;
+	data = NULL;
+	r = 0;
+exit:
+	if (data != NULL) {
+		if (data->chan != NULL)
+			iio_channel_disable(data->chan);
+		free(data);
+	}
+	return r;
 }
 
 struct owl_file_device {
@@ -633,35 +644,30 @@ static void free_devices(struct owl_device* devices, size_t size)
 
 static int create_devices(struct owl_device** devices, size_t* size, struct libowl* owl, const struct config* config, struct iio_context* ctx)
 {
-	struct owl_device *ptr = NULL;
-	size_t ptr_size = 0;
+	struct owl_device *ptr = calloc(config->sensors_count, sizeof(struct owl_device));
+	if (ptr == NULL)
+		return -ENOMEM;
+	size_t pos = 0;
 	int r = 0;
 
 	for (size_t i = 0; i < config->sensors_count; ++i) {
 		printf("SENSOR: %s type: %d method: %d device: %s channel: %s attribute: %s\n",
 			config->sensors[i].name, config->sensors[i].type, config->sensors[i].method,
 			config->sensors[i].device, config->sensors[i].channel, config->sensors[i].attribute);
-		/* allocate memory for device */
-		struct owl_device *tmpptr = realloc(ptr, sizeof(*ptr) * (ptr_size + 1));
-		if (tmpptr == NULL) {
-			r = -ENOMEM;
-			goto exit;
-		}
-		ptr = tmpptr;
 
 		const struct libowl_sensor_ops *ops = NULL;
 		switch (config->sensors[i].method) {
 		case OWLD_IIO:
-			r = create_owl_iio_device(ctx, &config->sensors[i], &ptr[ptr_size], (struct libowl_sensor_ops**) &ops);
+			r = create_owl_iio_device(ctx, &config->sensors[i], &ptr[i], (struct libowl_sensor_ops**) &ops);
 			break;
 		case OWLD_FILE:
-			r = create_owl_file_device(&config->sensors[i], &ptr[ptr_size], (struct libowl_sensor_ops**) &ops);
+			r = create_owl_file_device(&config->sensors[i], &ptr[i], (struct libowl_sensor_ops**) &ops);
 			break;
 		case OWLD_SYS:
-			r = create_owl_sys_device(&config->sensors[i], &ptr[ptr_size], (struct libowl_sensor_ops**) &ops);
+			r = create_owl_sys_device(&config->sensors[i], &ptr[i], (struct libowl_sensor_ops**) &ops);
 			break;
 		case OWLD_CMD:
-			r = create_owl_cmd_device(&config->sensors[i], &ptr[ptr_size], (struct libowl_sensor_ops**) &ops);
+			r = create_owl_cmd_device(&config->sensors[i], &ptr[i], (struct libowl_sensor_ops**) &ops);
 			break;
 		default:
 			r = -EINVAL;
@@ -671,8 +677,8 @@ static int create_devices(struct owl_device** devices, size_t* size, struct libo
 			fprintf(stderr, "sensor %s creating device [%d]: %s\n", config->sensors[i].name, -r, strerror(-r));
 			goto exit;
 		}
-		ptr_size++;
-		r = libowl_add_sensor(owl, config->sensors[i].type, config->sensors[i].name, 0, ops, config->sensors[i].interval_ms, ptr[ptr_size - 1].priv);
+		pos++;
+		r = libowl_add_sensor(owl, config->sensors[i].type, config->sensors[i].name, 0, ops, config->sensors[i].interval_ms, ptr[i].priv);
 		if (r != 0) {
 			fprintf(stderr, "sensor %s failed adding to libowl [%d]: %s\n", config->sensors[i].name, -r, strerror(-r));
 			goto exit;
@@ -680,11 +686,11 @@ static int create_devices(struct owl_device** devices, size_t* size, struct libo
 	}
 
 	*devices = ptr;
-	*size = ptr_size;
+	*size = pos;
 	r = 0;
 exit:
 	if (r != 0)
-		free_devices(ptr, ptr_size);
+		free_devices(ptr, pos);
 	return r;
 }
 
