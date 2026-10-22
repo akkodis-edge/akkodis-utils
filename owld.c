@@ -3,12 +3,16 @@
 #include <string.h>
 #include <errno.h>
 #include <unistd.h>
+#include <time.h>
 #include <fcntl.h>
 #include <time.h>
 #include <poll.h>
 #include <signal.h>
+#include <spawn.h>
 #include <sys/signalfd.h>
 #include <sys/sysinfo.h>
+#include <sys/wait.h>
+#include <sys/types.h>
 #include <cyaml/cyaml.h>
 #include <iio.h>
 #include "libowl.h"
@@ -32,6 +36,7 @@ enum method {
 	OWLD_IIO,
 	OWLD_FILE,
 	OWLD_SYS,
+	OWLD_CMD,
 };
 
 struct sensor_config {
@@ -42,6 +47,9 @@ struct sensor_config {
 	const char *device;
 	const char *channel;
 	const char *attribute;
+	const char **args;
+	size_t args_count;
+	int timeout_ms;
 };
 
 struct config {
@@ -64,6 +72,11 @@ static const cyaml_strval_t sensor_config_methods_strings[] = {
 	{"iio", OWLD_IIO},
 	{"file", OWLD_FILE},
 	{"sys", OWLD_SYS},
+	{"cmd", OWLD_CMD},
+};
+
+static const cyaml_schema_value_t sensor_config_args_schema = {
+		CYAML_VALUE_STRING(CYAML_FLAG_POINTER, char, 0, CYAML_UNLIMITED),
 };
 
 static const cyaml_schema_field_t sensor_config_fields_schema[] = {
@@ -80,6 +93,9 @@ static const cyaml_schema_field_t sensor_config_fields_schema[] = {
 			0, CYAML_UNLIMITED),
 	CYAML_FIELD_STRING_PTR("attribute", CYAML_FLAG_POINTER | CYAML_FLAG_OPTIONAL, struct sensor_config, attribute,
 			0, CYAML_UNLIMITED),
+	CYAML_FIELD_SEQUENCE("args", CYAML_FLAG_POINTER | CYAML_FLAG_OPTIONAL, struct sensor_config, args, &sensor_config_args_schema,
+			0, CYAML_UNLIMITED),
+	CYAML_FIELD_INT("timeout_ms", CYAML_FLAG_OPTIONAL, struct sensor_config, timeout_ms),
 	CYAML_FIELD_END
 };
 
@@ -104,6 +120,261 @@ struct owl_device {
 	void (*free)(void*);
 	void* priv;
 };
+
+struct owl_cmd_device {
+	const char *name;
+	const char **args;
+	struct timespec timeout;
+};
+
+enum owl_cmd_pdf {
+	OWLD_CMD_PFD_READ,
+	OWLD_CMD_PFD_WRITE,
+	OWLD_CMD_PFD_SIZE,
+};
+
+static int is_timeout(const struct timespec* timeout, const struct timespec* start)
+{
+	/* calculate time since start */
+	struct timespec time_now;
+	if (clock_gettime(CLOCK_MONOTONIC, &time_now) != 0) {
+		const int e = errno;
+		fprintf(stderr, "cmd failed getting timestamp [%d]: %s\n", e, strerror(e));
+		return -e;
+	}
+	struct timespec time_passed;
+	timespec_substract(&time_passed, &time_now, start);
+	if (timespec_cmp(timeout, &time_passed) <= 0)
+		return 1;
+	return 0;
+}
+
+enum {
+	CMD_STATUS_SUCCESS,
+	CMD_STATUS_ONGOING,
+};
+
+static int cmd_status(pid_t* pid)
+{
+	int status = 0;
+	pid_t ready = waitpid(*pid, &status, WNOHANG);
+	if (ready < 0) {
+		const int e = errno;
+		fprintf(stderr, "cmd failed waiting for process [%d]: %s\n", e, strerror(e));
+		return -e;
+	}
+	if (ready != *pid)
+		return CMD_STATUS_ONGOING;
+
+	*pid = -1;
+
+	/* exit due to signal */
+	if (WIFSIGNALED(status)) {
+		fprintf(stderr, "cmd exit by signal: %d\n", WTERMSIG(status));
+		return -EINTR;
+	}
+	/* check returncode == 0*/
+	if (WIFEXITED(status)) {
+		int rc = WEXITSTATUS(status);
+		if (rc == 0)
+			return CMD_STATUS_SUCCESS;
+		fprintf(stderr, "cmd returncode %d is not 0\n", rc);
+		return -EIO;
+	}
+	fprintf(stderr, "cmd exit without signal or returncode\n");
+	return -EIO;
+}
+
+static int owl_cmd_read(int* value, void* priv)
+{
+	struct owl_cmd_device *data = (struct owl_cmd_device*) priv;
+	int r = 0;
+	int pfd[OWLD_CMD_PFD_SIZE] = {-1,-1};
+	pid_t pid = -1;
+
+	const size_t buffer_size = 128;
+	size_t buffer_pos = 0;
+	char buffer[buffer_size + 1]; /* ensure null-terminator at end*/
+	buffer[buffer_size] = '\0';
+
+	/* prepare spawn actions */
+	posix_spawn_file_actions_t action;
+	if (posix_spawn_file_actions_init(&action) != 0) {
+		r = errno;
+		fprintf(stderr, "cmd %s [%s] failed preparing spawn action [%d]: %s\n",
+				data->name, data->args[0], r, strerror(r));
+		return -r;
+	}
+
+	/* prepare pipe for reading subprocess stdout */
+	if(pipe2(pfd, O_NONBLOCK | O_CLOEXEC) != 0) {
+		r = -errno;
+		fprintf(stderr, "cmd %s [%s] failed creating pipe [%d]: %s\n",
+				data->name, data->args[0], -r, strerror(-r));
+		goto exit;
+	}
+
+	r = 0;
+	/* close child stdin */
+	if (r == 0)
+		r = posix_spawn_file_actions_addclose(&action, STDIN_FILENO);
+	/* close child read end of pipe */
+	if (r == 0)
+		r = posix_spawn_file_actions_addclose(&action, pfd[OWLD_CMD_PFD_READ]);
+	/* reroute child stdout and stderr to write end of pipe */
+	if (r == 0)
+		r = posix_spawn_file_actions_adddup2(&action, pfd[OWLD_CMD_PFD_WRITE], STDOUT_FILENO);
+	if (r == 0)
+		r = posix_spawn_file_actions_adddup2(&action, pfd[OWLD_CMD_PFD_WRITE], STDERR_FILENO);
+	if (r != 0) {
+		r = -errno;
+		fprintf(stderr, "cmd %s [%s] failed adding spawn action [%d]: %s\n",
+				data->name, data->args[0], -r, strerror(-r));
+		goto exit;
+	}
+
+	/* spawn process */
+	r = posix_spawn(&pid, data->args[0], &action, NULL, (char* const*) data->args, NULL);
+	if (r != 0) {
+		r = -errno;
+		fprintf(stderr, "cmd %s [%s] failed spawning process [%d]: %s\n",
+				data->name, data->args[0], -r, strerror(-r));
+		goto exit;
+	}
+
+	/* mark start time */
+	struct timespec time_start;
+	if (clock_gettime(CLOCK_MONOTONIC, &time_start) != 0) {
+		r = -errno;
+		fprintf(stderr, "cmd %s [%s] failed getting timestamp [%d]: %s\n",
+				data->name, data->args[0], -r, strerror(-r));
+		goto exit;
+	}
+
+	/* read pipe to buffer while child is running */
+	int killed = 0;
+
+	while (1) {
+		/* check if data to read, unless buffer is full */
+		if (buffer_pos < buffer_size) {
+			const ssize_t bytes = read(pfd[OWLD_CMD_PFD_READ], &buffer[buffer_pos], buffer_size - buffer_pos);
+			if (bytes < 0) {
+				if (errno != EAGAIN) {
+					r = -errno;
+					fprintf(stderr, "cmd %s [%s] failed reading stdout [%d]: %s\n",
+							data->name, data->args[0], -r, strerror(-r));
+					goto exit;
+					buffer_pos += bytes;
+				}
+			}
+		}
+
+		/* Check if finished */
+		r = cmd_status(&pid);
+		if (r == CMD_STATUS_SUCCESS)
+			break;
+		if (r != CMD_STATUS_ONGOING) {
+			fprintf(stderr, "cmd %s [%s] process failed [%d]: %s\n",
+					data->name, data->args[0], -r, strerror(-r));
+			goto exit;
+		}
+
+		/* check for timeout */
+		r = is_timeout(&data->timeout, &time_start);
+		if (r < 0)
+			goto exit;
+		if (r == 1 && !killed) {
+			killed = 1;
+			fprintf(stderr, "cmd %s [%s] timeout -- kill\n", data->name, data->args[0]);
+			if (kill(pid, SIGILL) != 0) {
+				r = -errno;
+				fprintf(stderr, "cmd %s [%s] failed SIGKILL [%d]: %s\n",
+					data->name, data->args[0], -r, strerror(-r));
+				goto exit;
+			}
+		}
+	}
+
+	char *endptr = NULL;
+	const long result = strtol(buffer, &endptr, 0);
+	if (endptr == NULL || result < INT_MIN || result > INT_MAX) {
+		fprintf(stderr, "cmd %s [%s] returned invalid value\n",
+				data->name, data->args[0]);
+		r = -EFAULT;
+		goto exit;
+	}
+
+	*value = (int) result;
+	r = 0;
+exit:
+	if (pid > -1) {
+		kill(pid, SIGKILL);
+		int status = 0;
+		waitpid(pid, &status, 0);
+	}
+	if (pfd[OWLD_CMD_PFD_READ] > -1)
+		close(pfd[OWLD_CMD_PFD_READ]);
+	if (pfd[OWLD_CMD_PFD_WRITE] > -1)
+		close(pfd[OWLD_CMD_PFD_WRITE]);
+	posix_spawn_file_actions_destroy(&action);
+	return r;
+}
+
+static void owl_cmd_free(void* priv)
+{
+	struct owl_cmd_device *data = (struct owl_cmd_device*) priv;
+	if (data->args != NULL)
+		free(data->args);
+	free(data);
+}
+
+static const struct libowl_sensor_ops cmd_sensor_ops = {
+	.read = owl_cmd_read,
+};
+
+static int create_owl_cmd_device(struct sensor_config* scfg, struct owl_device* dev, struct libowl_sensor_ops** ops)
+{
+	if (scfg->args_count < 1) {
+		fprintf(stderr, "cmd device \"%s\" missing mandatory \"args\"\n", scfg->device);
+		return -EINVAL;
+	}
+
+	struct owl_cmd_device *data = calloc(1, sizeof(struct owl_cmd_device));
+	if (data == NULL)
+		return -ENOMEM;
+
+	int r = 0;
+
+	data->name = scfg->name;
+	timespec_from_ms(&data->timeout, scfg->timeout_ms >= 0 ? scfg->timeout_ms : 0);
+
+	/* Create arguments array suitable for posix_spawn() where:
+	 * arr[0]: cmd path
+	 * arr[n]: arg
+	 * arr[last]: NULL
+	 */
+	data->args = (const char**) calloc(scfg->args_count + 2, sizeof(char*));
+	if (data->args == NULL) {
+		r = -ENOMEM;
+		goto exit;
+	}
+	data->args[0] = scfg->device;
+	for (size_t i = 0; i < scfg->args_count; ++i)
+		data->args[i + 1] = scfg->args[i];
+
+	*ops = (struct libowl_sensor_ops*) &cmd_sensor_ops;
+	dev->priv = data;
+	data = NULL;
+	dev->free = owl_cmd_free;
+	r = 0;
+exit:
+	if (data != NULL) {
+		if (data->args != NULL)
+			free(data->args);
+		free(data);
+	}
+	return r;
+}
 
 enum owl_sys_type {
 	OWLD_SYS_NONE,
@@ -377,27 +648,30 @@ static int create_devices(struct owl_device** devices, size_t* size, struct libo
 			goto exit;
 		}
 		ptr = tmpptr;
-		ptr_size++;
 
 		const struct libowl_sensor_ops *ops = NULL;
 		switch (config->sensors[i].method) {
 		case OWLD_IIO:
-			r = create_owl_iio_device(ctx, &config->sensors[i], &ptr[ptr_size - 1], (struct libowl_sensor_ops**) &ops);
+			r = create_owl_iio_device(ctx, &config->sensors[i], &ptr[ptr_size], (struct libowl_sensor_ops**) &ops);
 			break;
 		case OWLD_FILE:
-			r = create_owl_file_device(&config->sensors[i], &ptr[ptr_size - 1], (struct libowl_sensor_ops**) &ops);
+			r = create_owl_file_device(&config->sensors[i], &ptr[ptr_size], (struct libowl_sensor_ops**) &ops);
 			break;
 		case OWLD_SYS:
-			r = create_owl_sys_device(&config->sensors[i], &ptr[ptr_size - 1], (struct libowl_sensor_ops**) &ops);
+			r = create_owl_sys_device(&config->sensors[i], &ptr[ptr_size], (struct libowl_sensor_ops**) &ops);
+			break;
+		case OWLD_CMD:
+			r = create_owl_cmd_device(&config->sensors[i], &ptr[ptr_size], (struct libowl_sensor_ops**) &ops);
 			break;
 		default:
 			r = -EINVAL;
-			break;
+			goto exit;
 		}
 		if (r != 0) {
 			fprintf(stderr, "sensor %s creating device [%d]: %s\n", config->sensors[i].name, -r, strerror(-r));
 			goto exit;
 		}
+		ptr_size++;
 		r = libowl_add_sensor(owl, config->sensors[i].type, config->sensors[i].name, 0, ops, config->sensors[i].interval_ms, ptr[ptr_size - 1].priv);
 		if (r != 0) {
 			fprintf(stderr, "sensor %s failed adding to libowl [%d]: %s\n", config->sensors[i].name, -r, strerror(-r));
