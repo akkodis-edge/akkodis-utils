@@ -41,8 +41,7 @@ struct libowl {
 	size_t buf_pos;
 };
 
-
-static void timespec_add(struct timespec* result, const struct timespec* lhs, const struct timespec* rhs)
+void timespec_add(struct timespec* result, const struct timespec* lhs, const struct timespec* rhs)
 {
 	result->tv_sec = lhs->tv_sec + rhs->tv_sec;
 	result->tv_nsec = lhs->tv_nsec + rhs->tv_nsec;
@@ -52,7 +51,7 @@ static void timespec_add(struct timespec* result, const struct timespec* lhs, co
 	}
 }
 
-static void timespec_substract(struct timespec* result, const struct timespec* lhs, const struct timespec* rhs)
+void timespec_substract(struct timespec* result, const struct timespec* lhs, const struct timespec* rhs)
 {
 	result->tv_sec = lhs->tv_sec - rhs->tv_sec;
 	result->tv_nsec = lhs->tv_nsec - rhs->tv_nsec;
@@ -63,7 +62,7 @@ static void timespec_substract(struct timespec* result, const struct timespec* l
 }
 
 /* return -1 if lhs < rhs, 0 if lhs == rhs and 1 if lhs > rhs*/
-static int timespec_cmp(const struct timespec* lhs, const struct timespec* rhs)
+int timespec_cmp(const struct timespec* lhs, const struct timespec* rhs)
 {
 	if (lhs->tv_sec == rhs->tv_sec && lhs->tv_nsec == rhs->tv_nsec)
 		return 0;
@@ -73,7 +72,7 @@ static int timespec_cmp(const struct timespec* lhs, const struct timespec* rhs)
 	return -1;
 }
 
-static void timespec_from_ms(struct timespec* ts, int ms)
+void timespec_from_ms(struct timespec* ts, int ms)
 {
 	ts->tv_sec = ms / 1000;
 	ts->tv_nsec = (ms % 1000) * 1000000;

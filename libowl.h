@@ -2,6 +2,7 @@
 #define LIBOWL__H__
 
 #include <inttypes.h>
+#include <time.h>
 
 #ifdef __cplusplus
 extern "C" {
@@ -205,6 +206,13 @@ int libowl_datapoints_sensor_data(const struct libowl_datapoints* dp, int sensor
  *
  * Returns 0 for success or negative errno for error. */
 int libowl_datapoints_range(const struct libowl_datapoints* dp, int sensor, double* start, double* end);
+
+/* Utility functions for timespec */
+void timespec_add(struct timespec* result, const struct timespec* lhs, const struct timespec* rhs);
+void timespec_substract(struct timespec* result, const struct timespec* lhs, const struct timespec* rhs);
+/* return -1 if lhs < rhs, 0 if lhs == rhs and 1 if lhs > rhs*/
+int timespec_cmp(const struct timespec* lhs, const struct timespec* rhs);
+void timespec_from_ms(struct timespec* ts, int ms);
 
 /* libowl internal -- exposed for testing -- do not use */
 struct libowl_impl_dp_value {
