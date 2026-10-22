@@ -142,7 +142,7 @@ def main():
                 arr = line.split(',')
                 if len(arr) != 2:
                     continue
-                sensors[arr[0]] = int(arr[1])
+                sensors[arr[0]] = int(arr[1]) * 1000
             # dump all
             if args.telit_temperature == 'ALL':
                 for k, v in sensors.items():
