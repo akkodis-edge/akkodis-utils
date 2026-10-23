@@ -13,6 +13,7 @@
 #include <sys/sysinfo.h>
 #include <sys/wait.h>
 #include <sys/types.h>
+#include <sys/syscall.h>
 #include <cyaml/cyaml.h>
 #include <iio.h>
 #include "libowl.h"
@@ -154,35 +155,43 @@ enum {
 	CMD_STATUS_ONGOING,
 };
 
-static int cmd_status(pid_t* pid)
+static int cmd_status(struct pollfd* pidpoll)
 {
-	int status = 0;
-	pid_t ready = waitpid(*pid, &status, WNOHANG);
-	if (ready < 0) {
-		const int e = errno;
-		fprintf(stderr, "cmd failed waiting for process [%d]: %s\n", e, strerror(e));
-		return -e;
+	/* avoid busy waiting and poll for ready child
+	 * with 10ms timeout */
+	int r = poll(pidpoll, 1, 10);
+	if (r < 0) {
+		r = errno;
+		fprintf(stderr, "cmd failed polling process [%d]: %s\n", r, strerror(r));
+		return -r;
 	}
-	if (ready != *pid)
+	if (r == 0)
 		return CMD_STATUS_ONGOING;
 
-	*pid = -1;
+	siginfo_t info;
+	memset(&info, 0, sizeof(info));
+	r = waitid(P_PIDFD, pidpoll->fd, &info, WEXITED | WSTOPPED);
+	if (r != 0) {
+		r = errno;
+		fprintf(stderr, "cmd failed waiting for process [%d]: %s\n", r, strerror(r));
+		return -r;
+	}
 
-	/* exit due to signal */
-	if (WIFSIGNALED(status)) {
-		fprintf(stderr, "cmd exit by signal: %d\n", WTERMSIG(status));
-		return -EINTR;
-	}
-	/* check returncode == 0*/
-	if (WIFEXITED(status)) {
-		int rc = WEXITSTATUS(status);
-		if (rc == 0)
+	switch(info.si_code) {
+	case CLD_EXITED: /* verify returncode */
+		if (info.si_status == 0)
 			return CMD_STATUS_SUCCESS;
-		fprintf(stderr, "cmd returncode %d is not 0\n", rc);
+		fprintf(stderr, "cmd returncode %d is not 0\n", info.si_status);
 		return -EIO;
+	case CLD_KILLED: /* signal */
+	case CLD_STOPPED:
+	case CLD_DUMPED:
+		fprintf(stderr, "cmd exit by signal: %d\n", info.si_status);
+		return -EINTR;
+	default:
+		fprintf(stderr, "cmd exit by unknown: %d\n", info.si_code);
+		return -EBADFD;
 	}
-	fprintf(stderr, "cmd exit without signal or returncode\n");
-	return -EIO;
 }
 
 static int owl_cmd_read(int* value, void* priv)
@@ -190,6 +199,7 @@ static int owl_cmd_read(int* value, void* priv)
 	struct owl_cmd_device *data = (struct owl_cmd_device*) priv;
 	int r = 0;
 	int pfd[OWLD_CMD_PFD_SIZE] = {-1,-1};
+	struct pollfd pidpoll = {.fd = -1, .events = POLLIN | POLLHUP, .revents = 0};
 	pid_t pid = -1;
 
 	const size_t buffer_size = 128;
@@ -242,6 +252,17 @@ static int owl_cmd_read(int* value, void* priv)
 		goto exit;
 	}
 
+	/* open fd to process for polling */
+	pidpoll.fd = syscall(SYS_pidfd_open, pid, 0);
+	if (pidpoll.fd < 0) {
+		r = -errno;
+		fprintf(stderr, "cmd %s [%s] failed retrieving process fd [%d]: %s\n",
+				data->name, data->args[0], -r, strerror(-r));
+		goto exit;
+	}
+	/* manage process by fd instead of pid */
+	pid = -1;
+
 	/* mark start time */
 	struct timespec time_start;
 	if (clock_gettime(CLOCK_MONOTONIC, &time_start) != 0) {
@@ -255,6 +276,22 @@ static int owl_cmd_read(int* value, void* priv)
 	int killed = 0;
 
 	while (1) {
+		/* Check if finished */
+		r = cmd_status(&pidpoll);
+		if (r == CMD_STATUS_SUCCESS) {
+			if (close(pidpoll.fd) != 0) {
+				r = -errno;
+				fprintf(stderr, "cmd failed closing process fd [%d]: %s\n", -r, strerror(-r));
+				goto exit;
+			}
+			pidpoll.fd = -1;
+		}
+		else if (r != CMD_STATUS_ONGOING) {
+			fprintf(stderr, "cmd %s [%s] process failed [%d]: %s\n",
+					data->name, data->args[0], -r, strerror(-r));
+			goto exit;
+		}
+
 		/* check if data to read, unless buffer is full */
 		if (buffer_pos < buffer_size) {
 			const ssize_t bytes = read(pfd[OWLD_CMD_PFD_READ], &buffer[buffer_pos], buffer_size - buffer_pos);
@@ -269,15 +306,9 @@ static int owl_cmd_read(int* value, void* priv)
 			}
 		}
 
-		/* Check if finished */
-		r = cmd_status(&pid);
-		if (r == CMD_STATUS_SUCCESS)
+		/* ready if fd set to negative value */
+		if (pidpoll.fd < 0)
 			break;
-		if (r != CMD_STATUS_ONGOING) {
-			fprintf(stderr, "cmd %s [%s] process failed [%d]: %s\n",
-					data->name, data->args[0], -r, strerror(-r));
-			goto exit;
-		}
 
 		/* check for timeout */
 		r = is_timeout(&data->timeout, &time_start);
@@ -286,7 +317,7 @@ static int owl_cmd_read(int* value, void* priv)
 		if (r == 1 && !killed) {
 			killed = 1;
 			fprintf(stderr, "cmd %s [%s] timeout -- kill\n", data->name, data->args[0]);
-			if (kill(pid, SIGILL) != 0) {
+			if (syscall(SYS_pidfd_send_signal, pidpoll.fd, SIGILL, NULL, 0) != 0) {
 				r = -errno;
 				fprintf(stderr, "cmd %s [%s] failed SIGKILL [%d]: %s\n",
 					data->name, data->args[0], -r, strerror(-r));
@@ -311,6 +342,12 @@ exit:
 		kill(pid, SIGKILL);
 		int status = 0;
 		waitpid(pid, &status, 0);
+	}
+	if (pidpoll.fd > -1) {
+		syscall(SYS_pidfd_send_signal, pidpoll.fd, SIGILL, NULL, 0);
+		siginfo_t info;
+		waitid(P_PIDFD, pidpoll.fd, &info, 0);
+		close(pidpoll.fd);
 	}
 	if (pfd[OWLD_CMD_PFD_READ] > -1)
 		close(pfd[OWLD_CMD_PFD_READ]);
