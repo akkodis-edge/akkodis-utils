@@ -46,12 +46,6 @@ static const struct libowl_sensor_ops dummy_ops {
 	dummy_sensor_read,
 };
 
-static void timespec_from_ms(struct timespec* ts, int ms)
-{
-	ts->tv_sec = ms / 1000;
-	ts->tv_nsec = (ms % 1000) * 1000000;
-}
-
 static int monotonic(struct timespec* ts, void* priv)
 {
 	int *time_ms = reinterpret_cast<int*>(priv);
