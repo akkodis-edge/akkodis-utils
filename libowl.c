@@ -858,8 +858,9 @@ int libowl_update(struct libowl* owl)
 				 * of free space is required. Create that here, if allowed. */
 				if (r == -EDQUOT && is_trim) {
 					/* Create a buffer of entries to be written + 50% (roundup)
-					 * to account for any changes in INTEGER sizes. */
-					size_t buffer_entries_extra = owl->buf_pos / 2 + (owl->buf_pos % 2 ? 1 : 0);
+					 * to account for any changes in table INTEGER sizes which
+					 * depending on stored value use 0-8 bytes. */
+					size_t buffer_entries_extra = (owl->buf_pos / 2) + (owl->buf_pos % 2 ? 1 : 0);
 					const size_t buffer_entries = (SIZE_MAX - buffer_entries_extra) > owl->buf_pos
 							? owl->buf_pos + buffer_entries_extra : SIZE_MAX;
 					pr_dbg(owl, "database full, freeing transaction buffer of size: %zu\n", buffer_entries);
