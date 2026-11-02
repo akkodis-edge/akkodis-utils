@@ -252,7 +252,7 @@ static int owl_cmd_read(int* value, void* priv)
 	}
 
 	/* open fd to process for polling */
-	pidpoll.fd = syscall(SYS_pidfd_open, pid, 0);
+	pidpoll.fd = (int) syscall(SYS_pidfd_open, pid, 0);
 	if (pidpoll.fd < 0) {
 		r = -errno;
 		fprintf(stderr, "cmd %s [%s] failed retrieving process fd [%d]: %s\n",
@@ -360,7 +360,7 @@ static void owl_cmd_free(void* priv)
 {
 	struct owl_cmd_device *data = (struct owl_cmd_device*) priv;
 	if (data->args != NULL)
-		free(data->args);
+		free((void*) data->args);
 	free(data);
 }
 
@@ -406,7 +406,7 @@ static int create_owl_cmd_device(struct sensor_config* scfg, struct owl_device* 
 exit:
 	if (data != NULL) {
 		if (data->args != NULL)
-			free(data->args);
+			free((void*) data->args);
 		free(data);
 	}
 	return r;
@@ -452,14 +452,14 @@ static int owl_sys_read(int* value, void* priv)
 
 		/* Return value as ppm */
 		const double ratio = 1.0 / (1 << SI_LOAD_SHIFT) * PERCENTAGE_TO_PPM;
-		*value = sinfo.loads[0] * ratio / cpu_online;
+		*value = (int) ((double) sinfo.loads[0] * ratio / (double) cpu_online);
 		break;
 	}
 	case OWLD_SYS_MEM_USAGE:
 	{
 		const unsigned long unavailable = sinfo.totalram - (sinfo.freeram + sinfo.bufferram);
-		const double used = (double) unavailable / sinfo.totalram;
-		*value = used * PERCENTAGE_TO_PPM;
+		const double used = (double) unavailable / (double) sinfo.totalram;
+		*value = (int) (used * PERCENTAGE_TO_PPM);
 		break;
 	}
 	case OWLD_SYS_UPTIME:
