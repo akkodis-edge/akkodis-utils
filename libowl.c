@@ -860,10 +860,11 @@ int libowl_update(struct libowl* owl)
 					/* Create a buffer of entries to be written + 50% (roundup)
 					 * to account for any changes in table INTEGER sizes which
 					 * depending on stored value use 0-8 bytes. */
-					size_t buffer_entries_extra = (owl->buf_pos / 2) + (owl->buf_pos % 2 ? 1 : 0);
-					const size_t buffer_entries = (SIZE_MAX - buffer_entries_extra) > owl->buf_pos
+					const size_t buffer_entries_extra = (owl->buf_pos / 2) + (owl->buf_pos % 2 ? 1 : 0);
+					const size_t buffer_entries_sz = (SIZE_MAX - buffer_entries_extra) > owl->buf_pos
 							? owl->buf_pos + buffer_entries_extra : SIZE_MAX;
-					pr_dbg(owl, "database full, freeing transaction buffer of size: %zu\n", buffer_entries);
+					const int buffer_entries = buffer_entries_sz > INT_MAX ? INT_MAX : (int) buffer_entries_sz;
+					pr_dbg(owl, "database full, freeing transaction buffer of size: %d\n", buffer_entries);
 					r = libowl_sensor_delete(owl, buffer_entries);
 					if (r == 0)
 						break;
@@ -914,13 +915,13 @@ int libowl_update_delay(const struct libowl* owl)
 		if (timespec_cmp(&remaining, &shortest) < 0)
 			memcpy(&shortest, &remaining, sizeof(shortest));
 	}
-
 	/* timespec to milliseconds, check for overflow */
 	if (shortest.tv_sec > (INT_MAX / 1000))
 		return INT_MAX;
-	int milliseconds = shortest.tv_sec * 1000;
-	/* round-up nano to closes milli */
-	const int nano_to_milli = (shortest.tv_nsec / 1000000)
+	int milliseconds = (int) shortest.tv_sec * 1000;
+	/* round-up nano to closest milli, expect timespec is normalized
+	 * and tv_nsec will always be less than a second */
+	const int nano_to_milli = (int) (shortest.tv_nsec / 1000000)
 								+ (shortest.tv_nsec % 1000000 ? 1 : 0);
 	if ((INT_MAX - milliseconds) < nano_to_milli)
 		return INT_MAX;
@@ -1106,7 +1107,7 @@ static char* allocate_filter_part(const char* prefix, const char* field, const c
 
 struct filters_data {
 	size_t part_count; /* required space in parts buffer */
-	size_t bind_count; /* required space in bind buffer */
+	int bind_count; /* required space in bind buffer */
 };
 /* if part or bind are NULL, then only returns filters_data and does not write to neither bind nor part */
 static int filters_to_statement_and_bind(struct filters_data* retdata, const struct libowl_filter* filters, size_t filters_size, int start_column, struct libowl_statement_part* part, struct libowl_bind* bind)
@@ -1114,8 +1115,8 @@ static int filters_to_statement_and_bind(struct filters_data* retdata, const str
 	const int allow_write = bind != NULL && part != NULL;
 	int add_and_prefix = 0;
 	size_t part_count = 0;
-	size_t bind_count = 0;
-	size_t op_in_count_by_type[LIBOWL_FILTER_ARRAY_SIZE];
+	int bind_count = 0;
+	int op_in_count_by_type[LIBOWL_FILTER_ARRAY_SIZE];
 	memset(op_in_count_by_type, 0, sizeof(op_in_count_by_type));
 
 	/* Handle all simple binds and count LIBOWL_OP_IN per type */
@@ -1144,7 +1145,7 @@ static int filters_to_statement_and_bind(struct filters_data* retdata, const str
 	}
 
 	/* Handle LIBOWL_OP_IN */
-	for (size_t j = 0; j < LIBOWL_FILTER_ARRAY_SIZE; ++j) {
+	for (int j = 0; j < LIBOWL_FILTER_ARRAY_SIZE; ++j) {
 		/* skip if no ops to handle */
 		if (op_in_count_by_type[j] < 1)
 			continue;
@@ -1163,7 +1164,7 @@ static int filters_to_statement_and_bind(struct filters_data* retdata, const str
 		int first_value = 1;
 		for (size_t i = 0; i < filters_size; ++i) {
 			/* skip wrong types or ops */
-			if (filters[i].type != (int) j || filters[i].op != LIBOWL_OP_IN)
+			if (filters[i].type != j || filters[i].op != LIBOWL_OP_IN)
 				continue;
 			if (allow_write) {
 				part[part_count].str = first_value ? "(?)" : ", (?)";
@@ -1261,11 +1262,19 @@ static int libowl_query_free(struct libowl_query* query)
 	return 0;
 }
 
+/* place a limit on number of filters to avoid overflowing part_count and bind_count
+ * in filters_to_statement_and_bind().
+ * Low enough to avoid the issue and high enough to never be encountered in
+ * in expected usage scenarios. */
+enum {
+	LIBOWL_FILTERS_MAX = 10000,
+};
+
 static int libowl_query_create(struct libowl* owl, struct libowl_query* query, int limit,
 								const struct libowl_option* options, size_t option_size,
 								const struct libowl_filter* filters, size_t filter_size)
 {
-	if (owl == NULL || query == NULL || limit < 1 || filters == NULL || filter_size == 0 || filter_size > INT_MAX)
+	if (owl == NULL || query == NULL || limit < 1 || filters == NULL || filter_size == 0 || filter_size > LIBOWL_FILTERS_MAX)
 		return -EINVAL;
 
 	struct libowl_statement_part *parts = NULL;
@@ -1385,7 +1394,7 @@ static int libowl_query_create(struct libowl* owl, struct libowl_query* query, i
 
 	/* Add limit */
 	parts[parts_pos++].str = " LIMIT (?)";
-	bind_int(&bind[bind_pos++], bind_column++, (int) limit);
+	bind_int(&bind[bind_pos++], bind_column++, limit);
 
 	/* Assemble statement */
 	sql = join_statement(parts, part_size);
@@ -1430,7 +1439,7 @@ static int libowl_query_next(struct libowl* owl, struct libowl_query* query, str
 		data->index = sqlite3_column_int64(query->stmt, 0);
 		data->type = sqlite3_column_int(query->stmt, 1);
 		data->name = (const char*) sqlite3_column_text(query->stmt, 2);
-		data->value = sqlite3_column_int64(query->stmt, 3);
+		data->value = sqlite3_column_int(query->stmt, 3);
 		data->epoch = sqlite3_column_double(query->stmt, 4);
 		return 0;
 	default:
@@ -1453,7 +1462,7 @@ int libowl_read(struct libowl* owl, const struct libowl_option* options, size_t 
 		return r;
 
 	/* retrieve data */
-	size_t pos = 0;
+	int pos = 0;
 	do {
 		r = libowl_query_next(owl, &query, &data[pos]);
 		switch (r) {
@@ -1473,7 +1482,7 @@ int libowl_read(struct libowl* owl, const struct libowl_option* options, size_t 
 exit:
 	libowl_query_free(&query);
 	if (r < 0) {
-		for (size_t i = 0; i < pos; ++i)
+		for (int i = 0; i < pos; ++i)
 			libowl_sensor_data_free(&data[i]);
 	}
 	return r;
@@ -1663,6 +1672,8 @@ int libowl_datapoints_create(struct libowl* owl, struct libowl_datapoints** dp, 
 									const struct libowl_filter* filters, size_t filter_size, int options)
 {
 	if (owl == NULL || dp == NULL || *dp != NULL || points < 1 || options == 0)
+		return -EINVAL;
+	if ((DATAPOINTS_FILTER_MIN_SIZE + filter_size) > LIBOWL_FILTERS_MAX)
 		return -EINVAL;
 
 	struct libowl_datapoints *tmp = calloc(1, sizeof(struct libowl_datapoints));
