@@ -423,7 +423,9 @@ struct owl_sys_device {
 	int type;
 };
 
-#define PERCENTAGE_TO_PPM 1000000
+enum {
+	PERCENTAGE_TO_PPM = 1000000,
+};
 
 static int owl_sys_read(int* value, void* priv)
 {
