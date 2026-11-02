@@ -1773,6 +1773,8 @@ int libowl_datapoints_range(const struct libowl_datapoints* dp, int sensor, doub
 {
 	if (dp == NULL || start == NULL || end == NULL)
 		return -EINVAL;
+	if (sensor >= dp->idp.sensors_pos)
+		return -ENOENT;
 
 	double lowest = dp->epoch_last;
 	double highest = 0.0;
