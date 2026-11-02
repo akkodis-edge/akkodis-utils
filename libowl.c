@@ -1042,7 +1042,7 @@ int libowl_option_max(struct libowl_option* option)
 
 static const char* op_to_str(int op)
 {
-	switch (op) {
+	switch ((enum libowl_sensor_filter_op) op) {
 	case LIBOWL_OP_GREATER_THAN:
 		return ">";
 	case LIBOWL_OP_GREATER_EQUAL:
@@ -1063,7 +1063,7 @@ static const char* op_to_str(int op)
 
 static const char* filter_type_to_field(int type)
 {
-	switch (type) {
+	switch ((enum libowl_sensor_filter_type) type) {
 	case LIBOWL_FILTER_INDEX:
 		return "A.id";
 	case LIBOWL_FILTER_EPOCH:
@@ -1072,13 +1072,15 @@ static const char* filter_type_to_field(int type)
 		return "S.name";
 	case LIBOWL_FILTER_TYPE:
 		return "S.type_id";
+	case LIBOWL_FILTER_ARRAY_SIZE:
+		break;
 	}
 	return NULL;
 }
 
 static void filter_bind(struct libowl_bind* bind, int column, const struct libowl_filter* filter)
 {
-	switch (filter->type) {
+	switch ((enum libowl_sensor_filter_type) filter->type) {
 	case LIBOWL_FILTER_INDEX:
 		bind_int64(bind, column, filter->data.mi64);
 		break;
@@ -1090,6 +1092,8 @@ static void filter_bind(struct libowl_bind* bind, int column, const struct libow
 		break;
 	case LIBOWL_FILTER_TYPE:
 		bind_int(bind, column, filter->data.mint);
+		break;
+	case LIBOWL_FILTER_ARRAY_SIZE:
 		break;
 	}
 }
