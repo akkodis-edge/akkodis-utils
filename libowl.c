@@ -1664,13 +1664,6 @@ int libowl_datapoints_create(struct libowl* owl, struct libowl_datapoints** dp, 
 	if (owl == NULL || dp == NULL || *dp != NULL || points < 1 || options == 0)
 		return -EINVAL;
 
-	/* only name and type filters are allowed */
-	for (size_t i = 0; i < filter_size; ++i) {
-		if (filters[i].type != LIBOWL_FILTER_NAME
-				&& filters[i].type != LIBOWL_FILTER_TYPE)
-			return -EINVAL;
-	}
-
 	struct libowl_datapoints *tmp = calloc(1, sizeof(struct libowl_datapoints));
 	if (tmp == NULL)
 		return -ENOMEM;
@@ -1686,8 +1679,26 @@ int libowl_datapoints_create(struct libowl* owl, struct libowl_datapoints** dp, 
 	}
 
 	/* add all name/type filters */
-	for (size_t i = 0; i < filter_size; ++i)
+	for (size_t i = 0; i < filter_size; ++i) {
 		memcpy(&tmp->filters[DATAPOINTS_FILTER_MIN_SIZE + i], &filters[i], sizeof(struct libowl_filter));
+
+		switch (tmp->filters[DATAPOINTS_FILTER_MIN_SIZE + i].type) {
+		case LIBOWL_FILTER_NAME:
+			/* allocate new name str to avoid lifetime dependency on caller */
+			tmp->filters[DATAPOINTS_FILTER_MIN_SIZE + i].data.str = strdup(filters[i].data.str);
+			if (tmp->filters[DATAPOINTS_FILTER_MIN_SIZE + i].data.str == NULL) {
+				r = -ENOMEM;
+				goto exit;
+			}
+			break;
+		case LIBOWL_FILTER_TYPE:
+			break;
+		/* only name and type filters are allowed */
+		default:
+			r = -EINVAL;
+			goto exit;
+		}
+	}
 
 	/* add aggregate option */
 	const int mask = LIBOWL_DATAPOINTS_AVG | LIBOWL_DATAPOINTS_MIN | LIBOWL_DATAPOINTS_MAX;
@@ -1728,6 +1739,13 @@ int libowl_datapoints_free(struct libowl_datapoints* dp)
 {
 	if (dp != NULL) {
 		if (dp->filters != NULL) {
+			for (size_t i = 0; i < dp->filters_size; ++i) {
+				if (dp->filters[i].type == LIBOWL_FILTER_NAME
+						&& dp->filters[i].data.str != NULL) {
+					free((void*) dp->filters[i].data.str);
+					dp->filters[i].data.str = NULL;
+				}
+			}
 			free(dp->filters);
 			dp->filters = NULL;
 		}
