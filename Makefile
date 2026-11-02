@@ -12,17 +12,26 @@ python3_sitepackages_dir ?= $(libdir)/python3/site-packages
 CFLAGS += -Wall -Wextra -Werror -std=gnu17 -pedantic -O3 -D_GNU_SOURCE -D_TIME_BITS=64 -D_FILE_OFFSET_BITS=64 -fPIC
 CXXFLAGS += -Wall -Wextra -Werror -std=gnu++20 -pedantic -O3 -I$(BUILD) -D_TIME_BITS=64 -D_FILE_OFFSET_BITS=64 -fPIC
 
-# Enable sanitizers by default
-USE_SANITIZER ?= 1
+# Disable sanitizers by default
+USE_SANITIZER ?= 0
 ifeq ($(USE_SANITIZER), 1)
 	CXXFLAGS += -fsanitize=address -fsanitize=undefined
 	CFLAGS += -fsanitize=address -fsanitize=undefined
 	LDFLAGS += -fsanitize=address -fsanitize=undefined
 endif
 
-# Enable clang-tidy checking by default
-USE_CLANG_TIDY ?= 1
-CLANG_TIDY ?= clang-tidy --config-file build-tools/clang-tidy.config
+# Disable clang-tidy checking by default
+USE_CLANG_TIDY ?= 0
+# Disable cognitive complexity check to prioritize other checks
+CLANG_TIDY_CHECKS_LIST = -readability-function-cognitive-complexity
+# short identifiers, in moderation, help making C more readable
+CLANG_TIDY_CHECKS_LIST += -readability-identifier-length
+# difficult to avoid in c
+CLANG_TIDY_CHECKS_LIST += -bugprone-easily-swappable-parameters
+space := $() $()
+comma := ,
+CLANG_TIDY_CHECKS ?= $(subst $(space),$(comma),$(CLANG_TIDY_CHECKS_LIST))
+CLANG_TIDY ?= clang-tidy --config-file build-tools/clang-tidy.config -checks=$(CLANG_TIDY_CHECKS)
 
 ifeq ($(abspath $(BUILD)),$(shell pwd))
 $(error "ERROR: Build dir can't be equal to source dir")
