@@ -183,7 +183,7 @@ enum libowl_datapoints_option {
  * Returns 0 for success or negative errno for error. */
 int libowl_datapoints_create(struct libowl* owl, struct libowl_datapoints** dp, int points, double interval,
 									const struct libowl_filter* filters, size_t filter_size, int options);
-int libowl_datapoints_free(struct libowl_datapoints* datapoints);
+int libowl_datapoints_free(struct libowl_datapoints* dp);
 
 /* Update datapoints buffer. Returns 1 if updated, 0 if not or negative errno for error */
 int libowl_datapoints_update(struct libowl_datapoints* dp);
