@@ -5,7 +5,6 @@
 #include <unistd.h>
 #include <time.h>
 #include <fcntl.h>
-#include <time.h>
 #include <poll.h>
 #include <signal.h>
 #include <spawn.h>
