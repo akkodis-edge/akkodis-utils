@@ -224,15 +224,15 @@ TEST_CASE("libowl_read") {
 	const size_t database_size = 9;
 	/* expected data in database */
 	const struct libowl_sensor_data expected[database_size] = {
-		{"sensor1", 1, 0.0, LIBOWL_SENSOR_TEMP, 10},
-		{"sensor2", 2, 0.0, LIBOWL_SENSOR_VOLTAGE, 20},
-		{"sensor3", 3, 0.0, LIBOWL_SENSOR_CURRENT, 30},
-		{"sensor1", 4, 10.0, LIBOWL_SENSOR_TEMP, 11},
-		{"sensor2", 5, 10.0, LIBOWL_SENSOR_VOLTAGE, 21},
-		{"sensor3", 6, 10.0, LIBOWL_SENSOR_CURRENT, 31},
-		{"sensor1", 7, 20.0, LIBOWL_SENSOR_TEMP, 12},
-		{"sensor2", 8, 20.0, LIBOWL_SENSOR_VOLTAGE, 22},
-		{"sensor3", 9, 20.0, LIBOWL_SENSOR_CURRENT, 32},
+		{.name = "sensor1", .index = 1, .epoch = 0.0, .type = LIBOWL_SENSOR_TEMP, .value = 10},
+		{.name = "sensor2", .index = 2, .epoch = 0.0, .type = LIBOWL_SENSOR_VOLTAGE, .value = 20},
+		{.name = "sensor3", .index = 3, .epoch = 0.0, .type = LIBOWL_SENSOR_CURRENT, .value = 30},
+		{.name = "sensor1", .index = 4, .epoch = 10.0, .type = LIBOWL_SENSOR_TEMP, .value = 11},
+		{.name = "sensor2", .index = 5, .epoch = 10.0, .type = LIBOWL_SENSOR_VOLTAGE, .value = 21},
+		{.name = "sensor3", .index = 6, .epoch = 10.0, .type = LIBOWL_SENSOR_CURRENT, .value = 31},
+		{.name = "sensor1", .index = 7, .epoch = 20.0, .type = LIBOWL_SENSOR_TEMP, .value = 12},
+		{.name = "sensor2", .index = 8, .epoch = 20.0, .type = LIBOWL_SENSOR_VOLTAGE, .value = 22},
+		{.name = "sensor3", .index = 9, .epoch = 20.0, .type = LIBOWL_SENSOR_CURRENT, .value = 32},
 	};
 
 	SECTION("Filter by index -- all") {
@@ -508,33 +508,33 @@ TEST_CASE("read aggregate") {
 	const size_t database_size = 27;
 	/* expected data in database */
 	const struct libowl_sensor_data expected[database_size] = {
-		{"sensor1", 1, 0.0, LIBOWL_SENSOR_TEMP, sensor_1_multiple * 1},
-		{"sensor2", 2, 0.0, LIBOWL_SENSOR_TEMP, sensor_2_multiple * 1},
-		{"sensor3", 3, 0.0, LIBOWL_SENSOR_TEMP, sensor_3_multiple * 1},
-		{"sensor1", 4, 10.0, LIBOWL_SENSOR_TEMP, sensor_1_multiple * 2},
-		{"sensor2", 5, 10.0, LIBOWL_SENSOR_TEMP, sensor_2_multiple * 2},
-		{"sensor3", 6, 10.0, LIBOWL_SENSOR_TEMP, sensor_3_multiple * 2},
-		{"sensor1", 7, 20.0, LIBOWL_SENSOR_TEMP, sensor_1_multiple * 3},
-		{"sensor2", 8, 20.0, LIBOWL_SENSOR_TEMP, sensor_2_multiple * 3},
-		{"sensor3", 9, 20.0, LIBOWL_SENSOR_TEMP, sensor_3_multiple * 3},
-		{"sensor1", 10, 30.0, LIBOWL_SENSOR_TEMP, sensor_1_multiple * 4},
-		{"sensor2", 11, 30.0, LIBOWL_SENSOR_TEMP, sensor_2_multiple * 4},
-		{"sensor3", 12, 30.0, LIBOWL_SENSOR_TEMP, sensor_3_multiple * 4},
-		{"sensor1", 13, 40.0, LIBOWL_SENSOR_TEMP, sensor_1_multiple * 5},
-		{"sensor2", 14, 40.0, LIBOWL_SENSOR_TEMP, sensor_2_multiple * 5},
-		{"sensor3", 15, 40.0, LIBOWL_SENSOR_TEMP, sensor_3_multiple * 5},
-		{"sensor1", 16, 50.0, LIBOWL_SENSOR_TEMP, sensor_1_multiple * 6},
-		{"sensor2", 17, 50.0, LIBOWL_SENSOR_TEMP, sensor_2_multiple * 6},
-		{"sensor3", 18, 50.0, LIBOWL_SENSOR_TEMP, sensor_3_multiple * 6},
-		{"sensor1", 19, 60.0, LIBOWL_SENSOR_TEMP, sensor_1_multiple * 7},
-		{"sensor2", 20, 60.0, LIBOWL_SENSOR_TEMP, sensor_2_multiple * 7},
-		{"sensor3", 21, 60.0, LIBOWL_SENSOR_TEMP, sensor_3_multiple * 7},
-		{"sensor1", 22, 70.0, LIBOWL_SENSOR_TEMP, sensor_1_multiple * 8},
-		{"sensor2", 23, 70.0, LIBOWL_SENSOR_TEMP, sensor_2_multiple * 8},
-		{"sensor3", 24, 70.0, LIBOWL_SENSOR_TEMP, sensor_3_multiple * 8},
-		{"sensor1", 25, 80.0, LIBOWL_SENSOR_TEMP, sensor_1_multiple * 9},
-		{"sensor2", 26, 80.0, LIBOWL_SENSOR_TEMP, sensor_2_multiple * 9},
-		{"sensor3", 27, 80.0, LIBOWL_SENSOR_TEMP, sensor_3_multiple * 9},
+		{.name = "sensor1", .index = 1, .epoch = 0.0, .type = LIBOWL_SENSOR_TEMP, .value = sensor_1_multiple * 1},
+		{.name = "sensor2", .index = 2, .epoch = 0.0, .type = LIBOWL_SENSOR_TEMP, .value = sensor_2_multiple * 1},
+		{.name = "sensor3", .index = 3, .epoch = 0.0, .type = LIBOWL_SENSOR_TEMP, .value = sensor_3_multiple * 1},
+		{.name = "sensor1", .index = 4, .epoch = 10.0, .type = LIBOWL_SENSOR_TEMP, .value = sensor_1_multiple * 2},
+		{.name = "sensor2", .index = 5, .epoch = 10.0, .type = LIBOWL_SENSOR_TEMP, .value = sensor_2_multiple * 2},
+		{.name = "sensor3", .index = 6, .epoch = 10.0, .type = LIBOWL_SENSOR_TEMP, .value = sensor_3_multiple * 2},
+		{.name = "sensor1", .index = 7, .epoch = 20.0, .type = LIBOWL_SENSOR_TEMP, .value = sensor_1_multiple * 3},
+		{.name = "sensor2", .index = 8, .epoch = 20.0, .type = LIBOWL_SENSOR_TEMP, .value = sensor_2_multiple * 3},
+		{.name = "sensor3", .index = 9, .epoch = 20.0, .type = LIBOWL_SENSOR_TEMP, .value = sensor_3_multiple * 3},
+		{.name = "sensor1", .index = 10, .epoch = 30.0, .type = LIBOWL_SENSOR_TEMP, .value = sensor_1_multiple * 4},
+		{.name = "sensor2", .index = 11, .epoch = 30.0, .type = LIBOWL_SENSOR_TEMP, .value = sensor_2_multiple * 4},
+		{.name = "sensor3", .index = 12, .epoch = 30.0, .type = LIBOWL_SENSOR_TEMP, .value = sensor_3_multiple * 4},
+		{.name = "sensor1", .index = 13, .epoch = 40.0, .type = LIBOWL_SENSOR_TEMP, .value = sensor_1_multiple * 5},
+		{.name = "sensor2", .index = 14, .epoch = 40.0, .type = LIBOWL_SENSOR_TEMP, .value = sensor_2_multiple * 5},
+		{.name = "sensor3", .index = 15, .epoch = 40.0, .type = LIBOWL_SENSOR_TEMP, .value = sensor_3_multiple * 5},
+		{.name = "sensor1", .index = 16, .epoch = 50.0, .type = LIBOWL_SENSOR_TEMP, .value = sensor_1_multiple * 6},
+		{.name = "sensor2", .index = 17, .epoch = 50.0, .type = LIBOWL_SENSOR_TEMP, .value = sensor_2_multiple * 6},
+		{.name = "sensor3", .index = 18, .epoch = 50.0, .type = LIBOWL_SENSOR_TEMP, .value = sensor_3_multiple * 6},
+		{.name = "sensor1", .index = 19, .epoch = 60.0, .type = LIBOWL_SENSOR_TEMP, .value = sensor_1_multiple * 7},
+		{.name = "sensor2", .index = 20, .epoch = 60.0, .type = LIBOWL_SENSOR_TEMP, .value = sensor_2_multiple * 7},
+		{.name = "sensor3", .index = 21, .epoch = 60.0, .type = LIBOWL_SENSOR_TEMP, .value = sensor_3_multiple * 7},
+		{.name = "sensor1", .index = 22, .epoch = 70.0, .type = LIBOWL_SENSOR_TEMP, .value = sensor_1_multiple * 8},
+		{.name = "sensor2", .index = 23, .epoch = 70.0, .type = LIBOWL_SENSOR_TEMP, .value = sensor_2_multiple * 8},
+		{.name = "sensor3", .index = 24, .epoch = 70.0, .type = LIBOWL_SENSOR_TEMP, .value = sensor_3_multiple * 8},
+		{.name = "sensor1", .index = 25, .epoch = 80.0, .type = LIBOWL_SENSOR_TEMP, .value = sensor_1_multiple * 9},
+		{.name = "sensor2", .index = 26, .epoch = 80.0, .type = LIBOWL_SENSOR_TEMP, .value = sensor_2_multiple * 9},
+		{.name = "sensor3", .index = 27, .epoch = 80.0, .type = LIBOWL_SENSOR_TEMP, .value = sensor_3_multiple * 9},
 	};
 
 	SECTION("Sanity check created data is as expected") {
@@ -557,15 +557,15 @@ TEST_CASE("read aggregate") {
 		SECTION("Average") {
 			const size_t avg_expected_size = 9;
 			const struct libowl_sensor_data avg_expected[avg_expected_size] = {
-				{"sensor1", 7, 20.0, LIBOWL_SENSOR_TEMP, 20},
-				{"sensor2", 8, 20.0, LIBOWL_SENSOR_TEMP, 200},
-				{"sensor3", 9, 20.0, LIBOWL_SENSOR_TEMP, 2000},
-				{"sensor1", 16, 50.0, LIBOWL_SENSOR_TEMP, 50},
-				{"sensor2", 17, 50.0, LIBOWL_SENSOR_TEMP, 500},
-				{"sensor3", 18, 50.0, LIBOWL_SENSOR_TEMP, 5000},
-				{"sensor1", 25, 80.0, LIBOWL_SENSOR_TEMP, 80},
-				{"sensor2", 26, 80.0, LIBOWL_SENSOR_TEMP, 800},
-				{"sensor3", 27, 80.0, LIBOWL_SENSOR_TEMP, 8000},
+				{.name = "sensor1", .index = 7, .epoch = 20.0, .type = LIBOWL_SENSOR_TEMP, .value = 20},
+				{.name = "sensor2", .index = 8, .epoch = 20.0, .type = LIBOWL_SENSOR_TEMP, .value = 200},
+				{.name = "sensor3", .index = 9, .epoch = 20.0, .type = LIBOWL_SENSOR_TEMP, .value = 2000},
+				{.name = "sensor1", .index = 16, .epoch = 50.0, .type = LIBOWL_SENSOR_TEMP, .value = 50},
+				{.name = "sensor2", .index = 17, .epoch = 50.0, .type = LIBOWL_SENSOR_TEMP, .value = 500},
+				{.name = "sensor3", .index = 18, .epoch = 50.0, .type = LIBOWL_SENSOR_TEMP, .value = 5000},
+				{.name = "sensor1", .index = 25, .epoch = 80.0, .type = LIBOWL_SENSOR_TEMP, .value = 80},
+				{.name = "sensor2", .index = 26, .epoch = 80.0, .type = LIBOWL_SENSOR_TEMP, .value = 800},
+				{.name = "sensor3", .index = 27, .epoch = 80.0, .type = LIBOWL_SENSOR_TEMP, .value = 8000},
 			};
 
 			REQUIRE(libowl_option_avg(&options[1]) == 0);
@@ -580,15 +580,15 @@ TEST_CASE("read aggregate") {
 		SECTION("Max") {
 			const size_t max_expected_size = 9;
 			const struct libowl_sensor_data max_expected[max_expected_size] = {
-				{"sensor1", 7, 20.0, LIBOWL_SENSOR_TEMP, 30},
-				{"sensor2", 8, 20.0, LIBOWL_SENSOR_TEMP, 300},
-				{"sensor3", 9, 20.0, LIBOWL_SENSOR_TEMP, 3000},
-				{"sensor1", 16, 50.0, LIBOWL_SENSOR_TEMP, 60},
-				{"sensor2", 17, 50.0, LIBOWL_SENSOR_TEMP, 600},
-				{"sensor3", 18, 50.0, LIBOWL_SENSOR_TEMP, 6000},
-				{"sensor1", 25, 80.0, LIBOWL_SENSOR_TEMP, 90},
-				{"sensor2", 26, 80.0, LIBOWL_SENSOR_TEMP, 900},
-				{"sensor3", 27, 80.0, LIBOWL_SENSOR_TEMP, 9000},
+				{.name = "sensor1", .index = 7, .epoch = 20.0, .type = LIBOWL_SENSOR_TEMP, .value = 30},
+				{.name = "sensor2", .index = 8, .epoch = 20.0, .type = LIBOWL_SENSOR_TEMP, .value = 300},
+				{.name = "sensor3", .index = 9, .epoch = 20.0, .type = LIBOWL_SENSOR_TEMP, .value = 3000},
+				{.name = "sensor1", .index = 16, .epoch = 50.0, .type = LIBOWL_SENSOR_TEMP, .value = 60},
+				{.name = "sensor2", .index = 17, .epoch = 50.0, .type = LIBOWL_SENSOR_TEMP, .value = 600},
+				{.name = "sensor3", .index = 18, .epoch = 50.0, .type = LIBOWL_SENSOR_TEMP, .value = 6000},
+				{.name = "sensor1", .index = 25, .epoch = 80.0, .type = LIBOWL_SENSOR_TEMP, .value = 90},
+				{.name = "sensor2", .index = 26, .epoch = 80.0, .type = LIBOWL_SENSOR_TEMP, .value = 900},
+				{.name = "sensor3", .index = 27, .epoch = 80.0, .type = LIBOWL_SENSOR_TEMP, .value = 9000},
 			};
 
 			REQUIRE(libowl_option_max(&options[1]) == 0);
@@ -603,15 +603,15 @@ TEST_CASE("read aggregate") {
 		SECTION("Min") {
 			const size_t min_expected_size = 9;
 			const struct libowl_sensor_data min_expected[min_expected_size] = {
-				{"sensor1", 7, 20.0, LIBOWL_SENSOR_TEMP, 10},
-				{"sensor2", 8, 20.0, LIBOWL_SENSOR_TEMP, 100},
-				{"sensor3", 9, 20.0, LIBOWL_SENSOR_TEMP, 1000},
-				{"sensor1", 16, 50.0, LIBOWL_SENSOR_TEMP, 40},
-				{"sensor2", 17, 50.0, LIBOWL_SENSOR_TEMP, 400},
-				{"sensor3", 18, 50.0, LIBOWL_SENSOR_TEMP, 4000},
-				{"sensor1", 25, 80.0, LIBOWL_SENSOR_TEMP, 70},
-				{"sensor2", 26, 80.0, LIBOWL_SENSOR_TEMP, 700},
-				{"sensor3", 27, 80.0, LIBOWL_SENSOR_TEMP, 7000},
+				{.name = "sensor1", .index = 7, .epoch = 20.0, .type = LIBOWL_SENSOR_TEMP, .value = 10},
+				{.name = "sensor2", .index = 8, .epoch = 20.0, .type = LIBOWL_SENSOR_TEMP, .value = 100},
+				{.name = "sensor3", .index = 9, .epoch = 20.0, .type = LIBOWL_SENSOR_TEMP, .value = 1000},
+				{.name = "sensor1", .index = 16, .epoch = 50.0, .type = LIBOWL_SENSOR_TEMP, .value = 40},
+				{.name = "sensor2", .index = 17, .epoch = 50.0, .type = LIBOWL_SENSOR_TEMP, .value = 400},
+				{.name = "sensor3", .index = 18, .epoch = 50.0, .type = LIBOWL_SENSOR_TEMP, .value = 4000},
+				{.name = "sensor1", .index = 25, .epoch = 80.0, .type = LIBOWL_SENSOR_TEMP, .value = 70},
+				{.name = "sensor2", .index = 26, .epoch = 80.0, .type = LIBOWL_SENSOR_TEMP, .value = 700},
+				{.name = "sensor3", .index = 27, .epoch = 80.0, .type = LIBOWL_SENSOR_TEMP, .value = 7000},
 			};
 
 			REQUIRE(libowl_option_min(&options[1]) == 0);
@@ -633,9 +633,9 @@ TEST_CASE("read aggregate") {
 		SECTION("Average") {
 			const size_t avg_expected_size = 3;
 			const struct libowl_sensor_data avg_expected[avg_expected_size] = {
-				{"sensor1", 25, 80.0, LIBOWL_SENSOR_TEMP, 50},
-				{"sensor2", 26, 80.0, LIBOWL_SENSOR_TEMP, 500},
-				{"sensor3", 27, 80.0, LIBOWL_SENSOR_TEMP, 5000},
+				{.name = "sensor1", .index = 25, .epoch = 80.0, .type = LIBOWL_SENSOR_TEMP, .value = 50},
+				{.name = "sensor2", .index = 26, .epoch = 80.0, .type = LIBOWL_SENSOR_TEMP, .value = 500},
+				{.name = "sensor3", .index = 27, .epoch = 80.0, .type = LIBOWL_SENSOR_TEMP, .value = 5000},
 			};
 			REQUIRE(libowl_option_avg(&options[0]) == 0);
 			struct test_data test;
@@ -649,9 +649,9 @@ TEST_CASE("read aggregate") {
 		SECTION("Max") {
 			const size_t max_expected_size = 3;
 			const struct libowl_sensor_data max_expected[max_expected_size] = {
-				{"sensor1", 25, 80.0, LIBOWL_SENSOR_TEMP, 90},
-				{"sensor2", 26, 80.0, LIBOWL_SENSOR_TEMP, 900},
-				{"sensor3", 27, 80.0, LIBOWL_SENSOR_TEMP, 9000},
+				{.name = "sensor1", .index = 25, .epoch = 80.0, .type = LIBOWL_SENSOR_TEMP, .value = 90},
+				{.name = "sensor2", .index = 26, .epoch = 80.0, .type = LIBOWL_SENSOR_TEMP, .value = 900},
+				{.name = "sensor3", .index = 27, .epoch = 80.0, .type = LIBOWL_SENSOR_TEMP, .value = 9000},
 			};
 			REQUIRE(libowl_option_max(&options[0]) == 0);
 			struct test_data test;
@@ -665,9 +665,9 @@ TEST_CASE("read aggregate") {
 		SECTION("Min") {
 			const size_t min_expected_size = 3;
 			const struct libowl_sensor_data min_expected[min_expected_size] = {
-				{"sensor1", 25, 80.0, LIBOWL_SENSOR_TEMP, 10},
-				{"sensor2", 26, 80.0, LIBOWL_SENSOR_TEMP, 100},
-				{"sensor3", 27, 80.0, LIBOWL_SENSOR_TEMP, 1000},
+				{.name = "sensor1", .index = 25, .epoch = 80.0, .type = LIBOWL_SENSOR_TEMP, .value = 10},
+				{.name = "sensor2", .index = 26, .epoch = 80.0, .type = LIBOWL_SENSOR_TEMP, .value = 100},
+				{.name = "sensor3", .index = 27, .epoch = 80.0, .type = LIBOWL_SENSOR_TEMP, .value = 1000},
 			};
 			REQUIRE(libowl_option_min(&options[0]) == 0);
 			struct test_data test;
