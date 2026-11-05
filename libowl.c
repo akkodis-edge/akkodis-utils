@@ -1827,10 +1827,6 @@ int libowl_datapoints_range(const struct libowl_datapoints* dp, int sensor, doub
 	return 0;
 }
 
-static double min_dbl(double a, double b)
-{
-	return a < b ? a : b;
-}
 
 static int64_t max_int64(int64_t a, int64_t b)
 {
@@ -1852,7 +1848,7 @@ int libowl_datapoints_update(struct libowl_datapoints* dp)
 		return 0;
 
 	/* calculate time range for query */
-	const double epoch_from = min_dbl(epoch_now - (dp->interval * (double) dp->points), 0.0);
+	const double epoch_from = epoch_now - (dp->interval * (double) dp->points);
 	r = libowl_filter_epoch(&dp->filters[DATAPOINTS_FILTER_EPOCH_FROM], LIBOWL_OP_GREATER_THAN, epoch_from);
 	if (r != 0)
 		return r;
