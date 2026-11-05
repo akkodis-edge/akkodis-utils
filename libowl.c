@@ -1471,7 +1471,8 @@ int libowl_read(struct libowl* owl, const struct libowl_option* options, size_t 
 		r = libowl_query_next(owl, &query, &data[pos]);
 		switch (r) {
 		case 0:
-			data[pos].name = strdup(data[pos].name);
+			if (data[pos].name != NULL)
+				data[pos].name = strdup(data[pos].name);
 			pos++;
 			break;
 		case 1:
