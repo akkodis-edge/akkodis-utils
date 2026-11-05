@@ -1677,7 +1677,9 @@ int libowl_datapoints_create(struct libowl* owl, struct libowl_datapoints** dp, 
 {
 	if (owl == NULL || dp == NULL || *dp != NULL || points < 1 || options == 0)
 		return -EINVAL;
-	if ((DATAPOINTS_FILTER_MIN_SIZE + filter_size) > LIBOWL_FILTERS_MAX)
+	if (filter_size > 0 && filters == NULL)
+		return -EINVAL;
+	if (filter_size > (LIBOWL_FILTERS_MAX - DATAPOINTS_FILTER_MIN_SIZE))
 		return -EINVAL;
 
 	struct libowl_datapoints *tmp = calloc(1, sizeof(struct libowl_datapoints));
