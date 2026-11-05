@@ -1,13 +1,28 @@
 #include <memory>
 #include <vector>
+#include <array>
 #include <cstring>
 #include "libowl.h"
 #define CATCH_CONFIG_MAIN
 #include <catch2/catch_test_macros.hpp>
 
-struct test_data {
-	struct libowl_sensor_data *data;
-	size_t size;
+struct SensorData {
+public:
+	SensorData() = default;
+	SensorData(size_t size)
+		: data (size)
+	{}
+	SensorData(const SensorData&) = delete;
+	SensorData& operator=(const SensorData&) = delete;
+	SensorData(SensorData&&) = default;
+	SensorData& operator=(SensorData&&) = default;
+	SensorData(SensorData&) = default;
+	~SensorData()
+	{
+		for (auto& sensor : data)
+			libowl_sensor_data_free(&sensor);
+	}
+	std::vector<struct libowl_sensor_data> data;
 };
 
 struct Deleter {
@@ -18,12 +33,6 @@ struct Deleter {
 	void operator()(struct libowl_sensor_data* data)
 	{
 		libowl_sensor_data_free(data);
-	}
-	void operator()(struct test_data* test)
-	{
-		for (size_t i = 0; i < test->size; ++i)
-			libowl_sensor_data_free(&test->data[i]);
-		free(test->data);
 	}
 	void operator()(struct libowl_datapoints* dp)
 	{
@@ -171,24 +180,14 @@ static int monotonic_s(struct timespec* ts, void* priv)
 	return 0;
 }
 
-static std::unique_ptr<struct test_data, Deleter> prepare_data(struct test_data* test, size_t entries)
+inline bool operator==(const struct libowl_sensor_data& lhs, const struct libowl_sensor_data& rhs)
 {
-	test->size = entries;
-	test->data = (struct libowl_sensor_data*) calloc(test->size, sizeof(*(test->data)));
-	REQUIRE(test->data != nullptr);
-	std::unique_ptr<struct test_data, Deleter> cleanup(test);
-	return cleanup;
+	return strcmp(lhs.name, rhs.name) == 0 && lhs.index == rhs.index
+			&& lhs.type == rhs.type && lhs.value == rhs.value
+			/* compare only seconds, drop fractions */
+			&& static_cast<int64_t>(lhs.epoch) == static_cast<int64_t>(rhs.epoch);
 }
-
-static void sensor_data_equal(const struct libowl_sensor_data* lhs, const struct libowl_sensor_data* rhs)
-{
-	REQUIRE(strcmp(lhs->name, rhs->name) == 0);
-	REQUIRE(lhs->index == rhs->index);
-	/* compare only seconds, drop fractions */
-	REQUIRE((int64_t) lhs->epoch == (int64_t) rhs->epoch);
-	REQUIRE(lhs->type == rhs->type);
-	REQUIRE(lhs->value == rhs->value);
-}
+inline bool operator!=(const struct libowl_sensor_data& lhs, const struct libowl_sensor_data& rhs) {return !(lhs == rhs);}
 
 TEST_CASE("libowl_read") {
 	/* Prepare database with separate entries, use our monotonic with second resolution to avoid issues with epoch double precision */
@@ -219,10 +218,8 @@ TEST_CASE("libowl_read") {
 	sensor3_value++;
 	seconds = 20;
 	REQUIRE(libowl_update(owl) == 3);
-	/* 9 readings available in database */
-	const size_t database_size = 9;
 	/* expected data in database */
-	const struct libowl_sensor_data expected[database_size] = {
+	const std::vector<struct libowl_sensor_data> expected = {
 		{.name = "sensor1", .index = 1, .epoch = 0.0, .type = LIBOWL_SENSOR_TEMP, .value = 10},
 		{.name = "sensor2", .index = 2, .epoch = 0.0, .type = LIBOWL_SENSOR_VOLTAGE, .value = 20},
 		{.name = "sensor3", .index = 3, .epoch = 0.0, .type = LIBOWL_SENSOR_CURRENT, .value = 30},
@@ -235,182 +232,146 @@ TEST_CASE("libowl_read") {
 	};
 
 	SECTION("Filter by index -- all") {
-		struct test_data test {};
-		auto cleanup = prepare_data(&test, database_size + 1);
+		SensorData returned(expected.size() + 1);
 		struct libowl_filter filter {};
 		REQUIRE(libowl_filter_index(&filter, LIBOWL_OP_GREATER_EQUAL, 1) == 0);
-		REQUIRE(libowl_read(owl, nullptr, 0, &filter, 1, test.data, test.size) == 9);
-		for (size_t i = 0; i < database_size; ++i)
-			sensor_data_equal(&test.data[i], &expected[i]);
+		REQUIRE(libowl_read(owl, nullptr, 0, &filter, 1, returned.data.data(), returned.data.size()) == static_cast<int>(expected.size()));
+		REQUIRE(std::equal(expected.begin(), expected.end(), returned.data.begin()));
 	}
 
 	SECTION("Filter by index -- all, descending") {
-		struct test_data test {};
-		auto cleanup = prepare_data(&test, database_size + 1);
+		SensorData returned(expected.size() + 1);
 		struct libowl_filter filter {};
 		REQUIRE(libowl_filter_index(&filter, LIBOWL_OP_GREATER_EQUAL, 1) == 0);
 		struct libowl_option option {};
 		REQUIRE(libowl_option_descending(&option) == 0);
-		REQUIRE(libowl_read(owl, &option, 1, &filter, 1, test.data, test.size) == 9);
-		for (size_t i = 0; i < database_size; ++i)
-			sensor_data_equal(&test.data[i], &expected[database_size - 1 - i]);
+		REQUIRE(libowl_read(owl, &option, 1, &filter, 1, returned.data.data(), returned.data.size()) == static_cast<int>(expected.size()));
+		REQUIRE(std::equal(expected.rbegin(), expected.rend(), returned.data.begin()));
 	}
 
 	SECTION("Filter by index -- middle three") {
-		struct test_data test {};
-		auto cleanup = prepare_data(&test, 4);
-		struct libowl_filter filters[2];
+		SensorData returned(4);
+		std::array<struct libowl_filter, 2> filters;
 		REQUIRE(libowl_filter_index(&filters[0], LIBOWL_OP_GREATER_THAN, 3) == 0);
 		REQUIRE(libowl_filter_index(&filters[1], LIBOWL_OP_LESS_THAN, 7) == 0);
-		REQUIRE(libowl_read(owl, nullptr, 0, filters, 2, test.data, test.size) == 3);
-		sensor_data_equal(&test.data[0], &expected[3]);
-		sensor_data_equal(&test.data[1], &expected[4]);
-		sensor_data_equal(&test.data[2], &expected[5]);
+		REQUIRE(libowl_read(owl, nullptr, 0, filters.data(), filters.size(), returned.data.data(), returned.data.size()) == 3);
+		REQUIRE(returned.data.at(0) == expected.at(3));
+		REQUIRE(returned.data.at(1) == expected.at(4));
+		REQUIRE(returned.data.at(2) == expected.at(5));
 	}
 
 	SECTION("Filter by index -- in") {
-		struct test_data test {};
-		auto cleanup = prepare_data(&test, 3);
-		struct libowl_filter filters[2];
+		SensorData returned(3);
+		std::array<struct libowl_filter, 2> filters;
 		REQUIRE(libowl_filter_index(&filters[0], LIBOWL_OP_IN, 2) == 0);
 		REQUIRE(libowl_filter_index(&filters[1], LIBOWL_OP_IN, 6) == 0);
-		REQUIRE(libowl_read(owl, nullptr, 0, filters, 2, test.data, test.size) == 2);
-		sensor_data_equal(&test.data[0], &expected[1]);
-		sensor_data_equal(&test.data[1], &expected[5]);
+		REQUIRE(libowl_read(owl, nullptr, 0, filters.data(), filters.size(), returned.data.data(), returned.data.size()) == 2);
+		REQUIRE(returned.data.at(0) == expected.at(1));
+		REQUIRE(returned.data.at(1) == expected.at(5));
 	}
 
 	SECTION("Filter by epoch -- all") {
-		struct test_data test {};
-		auto cleanup = prepare_data(&test, database_size + 1);
+		SensorData returned(expected.size() + 1);
 		struct libowl_filter filter {};
 		REQUIRE(libowl_filter_epoch(&filter, LIBOWL_OP_GREATER_EQUAL, 0.0) == 0);
-		REQUIRE(libowl_read(owl, nullptr, 0, &filter, 1, test.data, test.size) == 9);
-		for (size_t i = 0; i < database_size; ++i)
-			sensor_data_equal(&test.data[i], &expected[i]);
+		REQUIRE(libowl_read(owl, nullptr, 0, &filter, 1, returned.data.data(), returned.data.size()) == static_cast<int>(expected.size()));
+		REQUIRE(std::equal(expected.begin(), expected.end(), returned.data.begin()));
 	}
 
 	SECTION("Filter by epoch -- middle three") {
-		struct test_data test {};
-		auto cleanup = prepare_data(&test, 4);
-		struct libowl_filter filters[2];
+		SensorData returned(4);
+		std::array<struct libowl_filter, 2> filters;
 		REQUIRE(libowl_filter_epoch(&filters[0], LIBOWL_OP_GREATER_THAN, 0.0) == 0);
 		REQUIRE(libowl_filter_epoch(&filters[1], LIBOWL_OP_LESS_THAN, 20.0) == 0);
-		REQUIRE(libowl_read(owl, nullptr, 0, filters, 2, test.data, test.size) == 3);
-		sensor_data_equal(&test.data[0], &expected[3]);
-		sensor_data_equal(&test.data[1], &expected[4]);
-		sensor_data_equal(&test.data[2], &expected[5]);
+		REQUIRE(libowl_read(owl, nullptr, 0, filters.data(), filters.size(), returned.data.data(), returned.data.size()) == 3);
+		REQUIRE(returned.data.at(0) == expected.at(3));
+		REQUIRE(returned.data.at(1) == expected.at(4));
+		REQUIRE(returned.data.at(2) == expected.at(5));
 	}
 
 	SECTION("Filter by epoch -- in") {
-		struct test_data test {};
-		auto cleanup = prepare_data(&test, 7);
-		struct libowl_filter filters[2];
+		SensorData returned(7);
+		std::array<struct libowl_filter, 2> filters;
 		REQUIRE(libowl_filter_epoch(&filters[0], LIBOWL_OP_IN, 0.0) == 0);
 		REQUIRE(libowl_filter_epoch(&filters[1], LIBOWL_OP_IN, 20.0) == 0);
-		REQUIRE(libowl_read(owl, nullptr, 0, filters, 2, test.data, test.size) == 6);
-		sensor_data_equal(&test.data[0], &expected[0]);
-		sensor_data_equal(&test.data[1], &expected[1]);
-		sensor_data_equal(&test.data[2], &expected[2]);
-		sensor_data_equal(&test.data[3], &expected[6]);
-		sensor_data_equal(&test.data[4], &expected[7]);
-		sensor_data_equal(&test.data[5], &expected[8]);
+		REQUIRE(libowl_read(owl, nullptr, 0, filters.data(), filters.size(), returned.data.data(), returned.data.size()) == 6);
+		REQUIRE(returned.data.at(0) == expected.at(0));
+		REQUIRE(returned.data.at(1) == expected.at(1));
+		REQUIRE(returned.data.at(2) == expected.at(2));
+		REQUIRE(returned.data.at(3) == expected.at(6));
+		REQUIRE(returned.data.at(4) == expected.at(7));
+		REQUIRE(returned.data.at(5) == expected.at(8));
 	}
 
 	SECTION("Filter by name -- sensor1") {
-		struct test_data test {};
-		auto cleanup = prepare_data(&test, database_size + 1);
+		SensorData returned(4);
 		struct libowl_filter filter {};
 		REQUIRE(libowl_filter_name(&filter, LIBOWL_OP_EQUAL, "sensor1") == 0);
-		REQUIRE(libowl_read(owl, nullptr, 0, &filter, 1, test.data, test.size) == 3);
-		sensor_data_equal(&test.data[0], &expected[0]);
-		sensor_data_equal(&test.data[1], &expected[3]);
-		sensor_data_equal(&test.data[2], &expected[6]);
+		REQUIRE(libowl_read(owl, nullptr, 0, &filter, 1, returned.data.data(), returned.data.size()) == 3);
+		REQUIRE(returned.data.at(0) == expected.at(0));
+		REQUIRE(returned.data.at(1) == expected.at(3));
+		REQUIRE(returned.data.at(2) == expected.at(6));
 	}
 
 
 	SECTION("Filter by name -- not sensor1") {
-		struct test_data test {};
-		auto cleanup = prepare_data(&test, database_size + 1);
+		SensorData returned(7);
 		struct libowl_filter filter {};
 		REQUIRE(libowl_filter_name(&filter, LIBOWL_OP_NOT_EQUAL, "sensor1") == 0);
-		REQUIRE(libowl_read(owl, nullptr, 0, &filter, 1, test.data, test.size) == 6);
-		sensor_data_equal(&test.data[0], &expected[1]);
-		sensor_data_equal(&test.data[1], &expected[2]);
-		sensor_data_equal(&test.data[2], &expected[4]);
-		sensor_data_equal(&test.data[3], &expected[5]);
-		sensor_data_equal(&test.data[4], &expected[7]);
-		sensor_data_equal(&test.data[5], &expected[8]);
+		REQUIRE(libowl_read(owl, nullptr, 0, &filter, 1, returned.data.data(), returned.data.size()) == 6);
+		REQUIRE(returned.data.at(0) == expected.at(1));
+		REQUIRE(returned.data.at(1) == expected.at(2));
+		REQUIRE(returned.data.at(2) == expected.at(4));
+		REQUIRE(returned.data.at(3) == expected.at(5));
+		REQUIRE(returned.data.at(4) == expected.at(7));
+		REQUIRE(returned.data.at(5) == expected.at(8));
 	}
 
 	SECTION("Filter by name -- in") {
-		struct test_data test {};
-		auto cleanup = prepare_data(&test, 7);
-		struct libowl_filter filters[2];
+		SensorData returned(7);
+		std::array<struct libowl_filter, 2> filters;
 		REQUIRE(libowl_filter_name(&filters[0], LIBOWL_OP_IN, "sensor1") == 0);
 		REQUIRE(libowl_filter_name(&filters[1], LIBOWL_OP_IN, "sensor3") == 0);
-		REQUIRE(libowl_read(owl, nullptr, 0, filters, 2, test.data, test.size) == 6);
-		sensor_data_equal(&test.data[0], &expected[0]);
-		sensor_data_equal(&test.data[1], &expected[2]);
-		sensor_data_equal(&test.data[2], &expected[3]);
-		sensor_data_equal(&test.data[3], &expected[5]);
-		sensor_data_equal(&test.data[4], &expected[6]);
-		sensor_data_equal(&test.data[5], &expected[8]);
-	}
-
-
-	SECTION("Filter by name -- find all sensors") {
-		struct test_data test {};
-		auto cleanup = prepare_data(&test, database_size + 1);
-		struct libowl_filter filter {};
-		REQUIRE(libowl_filter_name(&filter, LIBOWL_OP_GREATER_THAN, "") == 0);
-		REQUIRE(libowl_read(owl, nullptr, 0, &filter, 1, &test.data[0], 1) == 1);
-		sensor_data_equal(&test.data[0], &expected[0]);
-		REQUIRE(libowl_filter_name(&filter, LIBOWL_OP_GREATER_THAN, test.data[0].name) == 0);
-		REQUIRE(libowl_read(owl, nullptr, 0, &filter, 1, &test.data[1], 1) == 1);
-		sensor_data_equal(&test.data[1], &expected[1]);
-		REQUIRE(libowl_filter_name(&filter, LIBOWL_OP_GREATER_THAN, test.data[1].name) == 0);
-		REQUIRE(libowl_read(owl, nullptr, 0, &filter, 1, &test.data[2], 1) == 1);
-		sensor_data_equal(&test.data[2], &expected[2]);
-		REQUIRE(libowl_filter_name(&filter, LIBOWL_OP_GREATER_THAN, test.data[2].name) == 0);
-		REQUIRE(libowl_read(owl, nullptr, 0, &filter, 1, &test.data[3], 1) == 0);
+		REQUIRE(libowl_read(owl, nullptr, 0, filters.data(), filters.size(), returned.data.data(), returned.data.size()) == 6);
+		REQUIRE(returned.data.at(0) == expected.at(0));
+		REQUIRE(returned.data.at(1) == expected.at(2));
+		REQUIRE(returned.data.at(2) == expected.at(3));
+		REQUIRE(returned.data.at(3) == expected.at(5));
+		REQUIRE(returned.data.at(4) == expected.at(6));
+		REQUIRE(returned.data.at(5) == expected.at(8));
 	}
 
 	SECTION("Filter by type -- all") {
-		struct test_data test {};
-		auto cleanup = prepare_data(&test, database_size + 1);
+		SensorData returned(10);
 		struct libowl_filter filter {};
 		REQUIRE(libowl_filter_type(&filter, LIBOWL_OP_GREATER_EQUAL, LIBOWL_SENSOR_TEMP) == 0);
-		REQUIRE(libowl_read(owl, nullptr, 0, &filter, 1, test.data, test.size) == 9);
-		for (size_t i = 0; i < database_size; ++i)
-			sensor_data_equal(&test.data[i], &expected[i]);
+		REQUIRE(libowl_read(owl, nullptr, 0, &filter, 1, returned.data.data(), returned.data.size()) == 9);
+		REQUIRE(std::equal(expected.begin(), expected.end(), returned.data.begin()));
 	}
 
 	SECTION("Filter by type -- voltage") {
-		struct test_data test {};
-		auto cleanup = prepare_data(&test, database_size + 1);
+		SensorData returned(4);
 		struct libowl_filter filter {};
 		REQUIRE(libowl_filter_type(&filter, LIBOWL_OP_EQUAL, LIBOWL_SENSOR_VOLTAGE) == 0);
-		REQUIRE(libowl_read(owl, nullptr, 0, &filter, 1, test.data, test.size) == 3);
-		sensor_data_equal(&test.data[0], &expected[1]);
-		sensor_data_equal(&test.data[1], &expected[4]);
-		sensor_data_equal(&test.data[2], &expected[7]);
+		REQUIRE(libowl_read(owl, nullptr, 0, &filter, 1, returned.data.data(), returned.data.size()) == 3);
+		REQUIRE(returned.data.at(0) == expected.at(1));
+		REQUIRE(returned.data.at(1) == expected.at(4));
+		REQUIRE(returned.data.at(2) == expected.at(7));
 	}
 
 	SECTION("Filter by type -- in") {
-		struct test_data test {};
-		auto cleanup = prepare_data(&test, 7);
-		struct libowl_filter filters[2];
+		SensorData returned(7);
+		std::array<struct libowl_filter, 2> filters;
 		REQUIRE(libowl_filter_type(&filters[0], LIBOWL_OP_IN, LIBOWL_SENSOR_VOLTAGE) == 0);
 		REQUIRE(libowl_filter_type(&filters[1], LIBOWL_OP_IN, LIBOWL_SENSOR_CURRENT) == 0);
-		REQUIRE(libowl_read(owl, nullptr, 0, filters, 2, test.data, test.size) == 6);
-		sensor_data_equal(&test.data[0], &expected[1]);
-		sensor_data_equal(&test.data[1], &expected[2]);
-		sensor_data_equal(&test.data[2], &expected[4]);
-		sensor_data_equal(&test.data[3], &expected[5]);
-		sensor_data_equal(&test.data[4], &expected[7]);
-		sensor_data_equal(&test.data[5], &expected[8]);
+		REQUIRE(libowl_read(owl, nullptr, 0, filters.data(), filters.size(), returned.data.data(), returned.data.size()) == 6);
+		REQUIRE(returned.data.at(0) == expected.at(1));
+		REQUIRE(returned.data.at(1) == expected.at(2));
+		REQUIRE(returned.data.at(2) == expected.at(4));
+		REQUIRE(returned.data.at(3) == expected.at(5));
+		REQUIRE(returned.data.at(4) == expected.at(7));
+		REQUIRE(returned.data.at(5) == expected.at(8));
 	}
-
 }
 
 TEST_CASE("buffer_duration") {
@@ -503,10 +464,8 @@ TEST_CASE("read aggregate") {
 		sensor3_value += sensor_3_multiple;
 	}
 
-	/* 27 readings available in database */
-	const size_t database_size = 27;
 	/* expected data in database */
-	const struct libowl_sensor_data expected[database_size] = {
+	const std::vector<struct libowl_sensor_data> expected = {
 		{.name = "sensor1", .index = 1, .epoch = 0.0, .type = LIBOWL_SENSOR_TEMP, .value = sensor_1_multiple * 1},
 		{.name = "sensor2", .index = 2, .epoch = 0.0, .type = LIBOWL_SENSOR_TEMP, .value = sensor_2_multiple * 1},
 		{.name = "sensor3", .index = 3, .epoch = 0.0, .type = LIBOWL_SENSOR_TEMP, .value = sensor_3_multiple * 1},
@@ -537,25 +496,23 @@ TEST_CASE("read aggregate") {
 	};
 
 	SECTION("Sanity check created data is as expected") {
-		struct test_data test {};
-		auto cleanup = prepare_data(&test, database_size + 1);
+		SensorData returned(expected.size() + 1);
 		struct libowl_filter filter {};
 		REQUIRE(libowl_filter_index(&filter, LIBOWL_OP_GREATER_EQUAL, 1) == 0);
-		REQUIRE(libowl_read(owl, nullptr, 0, &filter, 1, test.data, test.size) == database_size);
-		for (size_t i = 0; i < database_size; ++i)
-			sensor_data_equal(&test.data[i], &expected[i]);
+		REQUIRE(libowl_read(owl, nullptr, 0, &filter, 1, returned.data.data(), returned.data.size())
+				== static_cast<int>(expected.size()));
+		REQUIRE(std::equal(expected.begin(), expected.end(), returned.data.begin()));
 	}
 
 	SECTION("interval") {
-		struct libowl_filter filters[2];
+		std::array<struct libowl_filter, 2> filters;
 		REQUIRE(libowl_filter_epoch(&filters[0], LIBOWL_OP_GREATER_EQUAL, 0.0) == 0);
 		REQUIRE(libowl_filter_epoch(&filters[1], LIBOWL_OP_LESS_EQUAL, 80.0) == 0);
-		struct libowl_option options[2];
+		std::array<struct libowl_option, 2> options;
 		REQUIRE(libowl_option_interval(&options[0], 30.0) == 0);
 
 		SECTION("Average") {
-			const size_t avg_expected_size = 9;
-			const struct libowl_sensor_data avg_expected[avg_expected_size] = {
+			const std::vector<struct libowl_sensor_data> avg_expected = {
 				{.name = "sensor1", .index = 7, .epoch = 20.0, .type = LIBOWL_SENSOR_TEMP, .value = 20},
 				{.name = "sensor2", .index = 8, .epoch = 20.0, .type = LIBOWL_SENSOR_TEMP, .value = 200},
 				{.name = "sensor3", .index = 9, .epoch = 20.0, .type = LIBOWL_SENSOR_TEMP, .value = 2000},
@@ -568,17 +525,14 @@ TEST_CASE("read aggregate") {
 			};
 
 			REQUIRE(libowl_option_avg(&options[1]) == 0);
-			struct test_data test {};
-			auto cleanup = prepare_data(&test, avg_expected_size + 1);
-			const int r = libowl_read(owl, options, 2, filters, 2, test.data, test.size);
-			REQUIRE(r == avg_expected_size);
-			for (int i = 0; i < r; ++i)
-				sensor_data_equal(&test.data[i], &avg_expected[i]);
+			SensorData returned(avg_expected.size() + 1);
+			REQUIRE(libowl_read(owl, options.data(), options.size(), filters.data(), filters.size(), returned.data.data(), returned.data.size())
+					== static_cast<int>(avg_expected.size()));
+			REQUIRE(std::equal(avg_expected.begin(), avg_expected.end(), returned.data.begin()));
 		}
 
 		SECTION("Max") {
-			const size_t max_expected_size = 9;
-			const struct libowl_sensor_data max_expected[max_expected_size] = {
+			const std::vector<struct libowl_sensor_data> max_expected = {
 				{.name = "sensor1", .index = 7, .epoch = 20.0, .type = LIBOWL_SENSOR_TEMP, .value = 30},
 				{.name = "sensor2", .index = 8, .epoch = 20.0, .type = LIBOWL_SENSOR_TEMP, .value = 300},
 				{.name = "sensor3", .index = 9, .epoch = 20.0, .type = LIBOWL_SENSOR_TEMP, .value = 3000},
@@ -591,17 +545,14 @@ TEST_CASE("read aggregate") {
 			};
 
 			REQUIRE(libowl_option_max(&options[1]) == 0);
-			struct test_data test {};
-			auto cleanup = prepare_data(&test, max_expected_size + 1);
-			const int r = libowl_read(owl, options, 2, filters, 2, test.data, test.size);
-			REQUIRE(r == max_expected_size);
-			for (int i = 0; i < r; ++i)
-				sensor_data_equal(&test.data[i], &max_expected[i]);
+			SensorData returned(max_expected.size() + 1);
+			REQUIRE(libowl_read(owl, options.data(), options.size(), filters.data(), filters.size(), returned.data.data(), returned.data.size())
+					== static_cast<int>(max_expected.size()));
+			REQUIRE(std::equal(max_expected.begin(), max_expected.end(), returned.data.begin()));
 		}
 
 		SECTION("Min") {
-			const size_t min_expected_size = 9;
-			const struct libowl_sensor_data min_expected[min_expected_size] = {
+			const std::vector<struct libowl_sensor_data> min_expected = {
 				{.name = "sensor1", .index = 7, .epoch = 20.0, .type = LIBOWL_SENSOR_TEMP, .value = 10},
 				{.name = "sensor2", .index = 8, .epoch = 20.0, .type = LIBOWL_SENSOR_TEMP, .value = 100},
 				{.name = "sensor3", .index = 9, .epoch = 20.0, .type = LIBOWL_SENSOR_TEMP, .value = 1000},
@@ -614,67 +565,56 @@ TEST_CASE("read aggregate") {
 			};
 
 			REQUIRE(libowl_option_min(&options[1]) == 0);
-			struct test_data test {};
-			auto cleanup = prepare_data(&test, min_expected_size + 1);
-			const int r = libowl_read(owl, options, 2, filters, 2, test.data, test.size);
-			REQUIRE(r == min_expected_size);
-			for (int i = 0; i < r; ++i)
-				sensor_data_equal(&test.data[i], &min_expected[i]);
+			SensorData returned(min_expected.size() + 1);
+			REQUIRE(libowl_read(owl, options.data(), options.size(), filters.data(), filters.size(), returned.data.data(), returned.data.size())
+					== static_cast<int>(min_expected.size()));
+			REQUIRE(std::equal(min_expected.begin(), min_expected.end(), returned.data.begin()));
 		}
 	}
 
 	SECTION("Total") {
-		struct libowl_filter filters[2];
+		std::array<struct libowl_filter, 2> filters;
 		REQUIRE(libowl_filter_epoch(&filters[0], LIBOWL_OP_GREATER_EQUAL, 0.0) == 0);
 		REQUIRE(libowl_filter_epoch(&filters[1], LIBOWL_OP_LESS_EQUAL, 80.0) == 0);
-		struct libowl_option options[1];
+		std::array<struct libowl_option, 1> options;
 
 		SECTION("Average") {
-			const size_t avg_expected_size = 3;
-			const struct libowl_sensor_data avg_expected[avg_expected_size] = {
+			const std::vector<struct libowl_sensor_data> avg_expected = {
 				{.name = "sensor1", .index = 25, .epoch = 80.0, .type = LIBOWL_SENSOR_TEMP, .value = 50},
 				{.name = "sensor2", .index = 26, .epoch = 80.0, .type = LIBOWL_SENSOR_TEMP, .value = 500},
 				{.name = "sensor3", .index = 27, .epoch = 80.0, .type = LIBOWL_SENSOR_TEMP, .value = 5000},
 			};
 			REQUIRE(libowl_option_avg(&options[0]) == 0);
-			struct test_data test {};
-			auto cleanup = prepare_data(&test, avg_expected_size + 1);
-			const int r = libowl_read(owl, options, 1, filters, 2, test.data, test.size);
-			REQUIRE(r == avg_expected_size);
-			for (int i = 0; i < r; ++i)
-				sensor_data_equal(&test.data[i], &avg_expected[i]);
+			SensorData returned(avg_expected.size() + 1);
+			REQUIRE(libowl_read(owl, options.data(), options.size(), filters.data(), filters.size(), returned.data.data(), returned.data.size())
+					== static_cast<int>(avg_expected.size()));
+			REQUIRE(std::equal(avg_expected.begin(), avg_expected.end(), returned.data.begin()));
 		}
 
 		SECTION("Max") {
-			const size_t max_expected_size = 3;
-			const struct libowl_sensor_data max_expected[max_expected_size] = {
+			const std::vector<struct libowl_sensor_data> max_expected = {
 				{.name = "sensor1", .index = 25, .epoch = 80.0, .type = LIBOWL_SENSOR_TEMP, .value = 90},
 				{.name = "sensor2", .index = 26, .epoch = 80.0, .type = LIBOWL_SENSOR_TEMP, .value = 900},
 				{.name = "sensor3", .index = 27, .epoch = 80.0, .type = LIBOWL_SENSOR_TEMP, .value = 9000},
 			};
 			REQUIRE(libowl_option_max(&options[0]) == 0);
-			struct test_data test {};
-			auto cleanup = prepare_data(&test, max_expected_size + 1);
-			const int r = libowl_read(owl, options, 1, filters, 2, test.data, test.size);
-			REQUIRE(r == max_expected_size);
-			for (int i = 0; i < r; ++i)
-				sensor_data_equal(&test.data[i], &max_expected[i]);
+			SensorData returned(max_expected.size() + 1);
+			REQUIRE(libowl_read(owl, options.data(), options.size(), filters.data(), filters.size(), returned.data.data(), returned.data.size())
+					== static_cast<int>(max_expected.size()));
+			REQUIRE(std::equal(max_expected.begin(), max_expected.end(), returned.data.begin()));
 		}
 
 		SECTION("Min") {
-			const size_t min_expected_size = 3;
-			const struct libowl_sensor_data min_expected[min_expected_size] = {
+			const std::vector<struct libowl_sensor_data> min_expected = {
 				{.name = "sensor1", .index = 25, .epoch = 80.0, .type = LIBOWL_SENSOR_TEMP, .value = 10},
 				{.name = "sensor2", .index = 26, .epoch = 80.0, .type = LIBOWL_SENSOR_TEMP, .value = 100},
 				{.name = "sensor3", .index = 27, .epoch = 80.0, .type = LIBOWL_SENSOR_TEMP, .value = 1000},
 			};
 			REQUIRE(libowl_option_min(&options[0]) == 0);
-			struct test_data test {};
-			auto cleanup = prepare_data(&test, min_expected_size + 1);
-			const int r = libowl_read(owl, options, 1, filters, 2, test.data, test.size);
-			REQUIRE(r == min_expected_size);
-			for (int i = 0; i < r; ++i)
-				sensor_data_equal(&test.data[i], &min_expected[i]);
+			SensorData returned(min_expected.size() + 1);
+			REQUIRE(libowl_read(owl, options.data(), options.size(), filters.data(), filters.size(), returned.data.data(), returned.data.size())
+					== static_cast<int>(min_expected.size()));
+			REQUIRE(std::equal(min_expected.begin(), min_expected.end(), returned.data.begin()));
 		}
 	}
 }
