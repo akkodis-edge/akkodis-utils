@@ -132,6 +132,7 @@ enum bind_type {
 	BIND_INT,
 	BIND_INT64,
 	BIND_DOUBLE,
+	BIND_DOUBLE_INT, /* value either double or int, returned as int */
 };
 
 struct libowl_bind {
@@ -188,6 +189,12 @@ static int libowl_stmt_col(struct libowl* owl, struct sqlite3_stmt* stmt, struct
 			break;
 		case BIND_INT:
 			if (sqlite3_column_type(stmt, bind[i].col) != SQLITE_INTEGER)
+				return -EBADF;
+			bind[i].data.integer = sqlite3_column_int(stmt, bind[i].col);
+			break;
+		case BIND_DOUBLE_INT:
+			if (sqlite3_column_type(stmt, bind[i].col) != SQLITE_INTEGER
+					&& sqlite3_column_type(stmt, bind[i].col) != SQLITE_FLOAT)
 				return -EBADF;
 			bind[i].data.integer = sqlite3_column_int(stmt, bind[i].col);
 			break;
@@ -1435,16 +1442,26 @@ exit:
 /* Returns 0 for OK and more available, 1 if DONE or negative errno for error */
 static int libowl_query_next(struct libowl* owl, struct libowl_query* query, struct libowl_sensor_data* data)
 {
-	const int r = sqlite3_step(query->stmt);
+	struct libowl_bind bind[] = {
+		{.col = 0, .type = BIND_INT64},
+		{.col = 1, .type = BIND_INT},
+		{.col = 2, .type = BIND_TEXT},
+		{.col = 3, .type = BIND_DOUBLE_INT}, /* aggregates return doubles, we want them converted to integers */
+		{.col = 4, .type = BIND_DOUBLE},
+	};
+	int r = sqlite3_step(query->stmt);
 	switch (r) {
 	case SQLITE_DONE:
 		return 1;
 	case SQLITE_ROW:
-		data->index = sqlite3_column_int64(query->stmt, 0);
-		data->type = sqlite3_column_int(query->stmt, 1);
-		data->name = (const char*) sqlite3_column_text(query->stmt, 2);
-		data->value = sqlite3_column_int(query->stmt, 3);
-		data->epoch = sqlite3_column_double(query->stmt, 4);
+		r = libowl_stmt_col(owl, query->stmt, bind, ARRAY_SIZE(bind));
+		if (r != 0)
+			return r;
+		data->index = bind[0].data.i64;
+		data->type = bind[1].data.integer;
+		data->name = bind[2].data.str;
+		data->value = bind[3].data.integer;
+		data->epoch = bind[4].data.dbl;
 		return 0;
 	default:
 		pr_err(owl, "sqlite3_step(read) [%d]: %s\n", r, sqlite3_errstr(r));
