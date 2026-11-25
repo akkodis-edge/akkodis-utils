@@ -8,7 +8,7 @@ import subprocess
 import termios
 import tty
 import select
-from datetime import datetime
+from datetime import datetime, timezone
 from rich.live import Live
 from rich.console import Console
 from rich.layout import Layout
@@ -255,9 +255,28 @@ def main():
     parser = argparse.ArgumentParser(description='Logger separated in daemon writer and client reader(s)')
     parser.add_argument('--db', required=True, help='Path to database file')
     parser.add_argument('--debug', action='store_true', help='Debug output')
+    parser.add_argument('--dump', action='store_true', help='Dump database content to stdout in csv format')
     args = parser.parse_args()
 
     db = LibOwl(args.db)
+
+    if args.dump:
+        last_index = 0
+        print('"utcdate","name","type","value"')
+        while True:
+            filters = Filters()
+            filters.index(LIBOWL_OP_GREATER_THAN, last_index)
+            options = Options()
+            data = db.read(filters, options, 500)
+            for (name, index, epoch, type, value) in data:
+                if index > last_index:
+                    last_index = index
+                datestr = datetime.fromtimestamp(epoch, timezone.utc).strftime('%Y-%m-%d %H:%M:%S.%f')
+                typestr = sensor_type_name.get(type, 'UNKNOWN')
+                print(f'"{datestr}","{name}","{typestr}","{value}"')
+            if len(data) < 500:
+                break
+        sys.exit(0)
 
     console = Console()
 
