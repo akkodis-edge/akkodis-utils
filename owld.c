@@ -50,6 +50,8 @@ struct sensor_config {
 	const char **args;
 	size_t args_count;
 	int timeout_ms;
+	int postprocess_multiply;
+	int postprocess_divide;
 };
 
 struct config {
@@ -96,6 +98,8 @@ static const cyaml_schema_field_t sensor_config_fields_schema[] = {
 	CYAML_FIELD_SEQUENCE("args", CYAML_FLAG_POINTER | CYAML_FLAG_OPTIONAL, struct sensor_config, args, &sensor_config_args_schema,
 			0, CYAML_UNLIMITED),
 	CYAML_FIELD_INT("timeout_ms", CYAML_FLAG_OPTIONAL, struct sensor_config, timeout_ms),
+	CYAML_FIELD_INT("postprocess_multiply", CYAML_FLAG_OPTIONAL, struct sensor_config, postprocess_multiply),
+	CYAML_FIELD_INT("postprocess_divide", CYAML_FLAG_OPTIONAL, struct sensor_config, postprocess_divide),
 	CYAML_FIELD_END
 };
 
@@ -116,6 +120,28 @@ static const cyaml_schema_value_t config_schema = {
 	CYAML_VALUE_MAPPING(CYAML_FLAG_POINTER, struct config, config_fields),
 };
 
+struct postprocess {
+	int multiply;
+	int divide;
+};
+
+static void postprocess_init(struct postprocess* pp, const struct sensor_config* scfg)
+{
+	pp->multiply = scfg->postprocess_multiply;
+	pp->divide = scfg->postprocess_divide;
+}
+
+static int postprocess_apply(const struct postprocess* pp, int value)
+{
+	if (pp->divide != 0)
+		value /= pp->divide;
+	if (pp->multiply != 0) {
+		if (__builtin_mul_overflow(pp->multiply, value, &value))
+			value = INT_MAX;
+	}
+	return value;
+}
+
 struct owl_device {
 	void (*free)(void*);
 	void* priv;
@@ -125,6 +151,7 @@ struct owl_cmd_device {
 	const char *name;
 	const char **args;
 	struct timespec timeout;
+	struct postprocess pp;
 };
 
 enum owl_cmd_pdf {
@@ -334,7 +361,7 @@ static int owl_cmd_read(int* value, void* priv)
 		goto exit;
 	}
 
-	*value = (int) result;
+	*value = postprocess_apply(&data->pp, (int) result);
 	r = 0;
 exit:
 	if (pid > -1) {
@@ -383,6 +410,7 @@ static int create_owl_cmd_device(struct sensor_config* scfg, struct owl_device* 
 
 	data->name = scfg->name;
 	timespec_from_ms(&data->timeout, scfg->timeout_ms >= 0 ? scfg->timeout_ms : 0);
+	postprocess_init(&data->pp, scfg);
 
 	/* Create arguments array suitable for posix_spawn() where:
 	 * arr[0]: cmd path
@@ -522,6 +550,7 @@ struct owl_iio_device {
 	struct iio_device *dev;
 	struct iio_channel *chan;
 	char *attr;
+	struct postprocess pp;
 };
 
 static int iio_read(int* value, void* priv)
@@ -544,7 +573,7 @@ static int iio_read(int* value, void* priv)
 
 	if (attr > INT_MAX || attr < INT_MIN)
 		return -ERANGE;
-	*value = (int) attr;
+	*value = postprocess_apply(&data->pp, (int) attr);
 	return 0;
 }
 
@@ -574,6 +603,8 @@ static int create_owl_iio_device(struct iio_context* ctx, struct sensor_config* 
 	struct owl_iio_device *data = (struct owl_iio_device*) calloc(1, sizeof(struct owl_iio_device));
 	if (data == NULL)
 		return -ENOMEM;
+
+	postprocess_init(&data->pp, scfg);
 
 	int r = 0;
 	data->dev = iio_context_find_device(ctx, scfg->device);
@@ -605,6 +636,7 @@ exit:
 
 struct owl_file_device {
 	char *path;
+	struct postprocess pp;
 };
 
 static int owl_file_read(int* value, void* priv)
@@ -642,7 +674,7 @@ static int owl_file_read(int* value, void* priv)
 		fprintf(stderr, "file %s read returned invalid value\n", data->path);
 		return -EFAULT;
 	}
-	*value = (int) result;
+	*value = postprocess_apply(&data->pp, (int) result);
 
 	return 0;
 }
@@ -665,6 +697,7 @@ static int create_owl_file_device(struct sensor_config* scfg, struct owl_device*
 		return -ENOMEM;
 	struct owl_file_device *data = (struct owl_file_device*) dev->priv;
 	data->path = (char*) scfg->device;
+	postprocess_init(&data->pp, scfg);
 	*ops = (struct libowl_sensor_ops*) &file_sensor_ops;
 	return 0;
 }
